@@ -1,0 +1,6 @@
+<resources>
+    <item name="channel_search" type="id" />
+    <item name="channel_choices" type="id" />
+    <item name="channel_progress" type="id" />
+    <item name="video_search" type="id" />
+</resources>

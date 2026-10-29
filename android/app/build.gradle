@@ -1,0 +1,109 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'org.jetbrains.kotlin.plugin.compose'
+}
+
+android {
+    namespace 'app.cinespice.android'
+    compileSdk 35
+    buildToolsVersion '35.0.0'
+    // Used by AGP to remove native debug symbols from packaged libraries.
+    ndkVersion '27.2.12479018'
+    defaultConfig {
+        applicationId 'app.cinespice.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 4
+        versionName '1.2.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    compileOptions { coreLibraryDesugaringEnabled true; sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildFeatures { compose true }
+    sourceSets.main.assets.srcDir(layout.buildDirectory.dir("generated/telegramAssets"))
+    kotlinOptions { jvmTarget = '17' }
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        // Same optimizations as release, signed for direct installation from Actions.
+        // Production release keys stay outside Git.
+        optimized {
+            initWith release
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ['release']
+        }
+    }
+    testBuildType providers.gradleProperty('deviceTestBuildType').getOrElse('debug')
+    splits {
+        abi { enable true; reset(); include 'arm64-v8a', 'armeabi-v7a', 'x86_64'; universalApk false }
+    }
+    packaging { jniLibs { useLegacyPackaging true } }
+    lint { abortOnError true }
+}
+dependencies {
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation platform('androidx.compose:compose-bom:2024.10.01')
+    implementation 'androidx.activity:activity-compose:1.9.3'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-core'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7'
+    implementation 'androidx.room:room-runtime:2.6.1'
+    annotationProcessor 'androidx.room:room-compiler:2.6.1'
+    androidTestImplementation platform('androidx.compose:compose-bom:2024.10.01')
+    androidTestImplementation 'androidx.compose.ui:ui-test-junit4'
+    debugImplementation 'androidx.compose.ui:ui-test-manifest'
+    // Keep the shared tracing API consistent with the instrumentation runner.
+    implementation 'androidx.tracing:tracing:1.1.0'
+    implementation 'org.videolan.android:libvlc-all:3.6.5'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test:core:1.6.1'
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
+}
+
+tasks.register('verifyTdlib') {
+    doLast {
+        ['arm64-v8a', 'armeabi-v7a', 'x86_64'].each { abi ->
+            if (!file("src/main/jniLibs/${abi}/libtdjson.so").isFile()) {
+                throw new GradleException('TDLib binaries are missing. Run ./prepare-tdlib.sh from android/ before building.')
+            }
+        }
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'verifyTdlib' }
+
+// Same Telegram application identity as the iOS build; never prompt for API keys.
+tasks.register('configureTelegram') {
+    def destination = layout.buildDirectory.file('generated/telegramAssets/telegram-build-credentials.json')
+    outputs.file(destination)
+    outputs.upToDateWhen { false }
+    doLast {
+        def local = new File(System.getenv('CINESPICE_TELEGRAM_CONFIG') ?: rootProject.file('telegram-config.local.json').path)
+        def saved = local.isFile() ? new groovy.json.JsonSlurper().parse(local) : [:]
+        def id = (System.getenv('TELEGRAM_API_ID') ?: saved.apiID ?: '').toString().trim()
+        def hash = (System.getenv('TELEGRAM_API_HASH') ?: saved.apiHash ?: '').toString().trim()
+        if (!(id ==~ /[1-9][0-9]{0,9}/) || new BigInteger(id) <= 0 || new BigInteger(id) > 2147483647)
+            throw new GradleException('Configure a valid TELEGRAM_API_ID for this build.')
+        if (!(hash ==~ /[a-fA-F0-9]{32}/)) throw new GradleException('Configure a valid TELEGRAM_API_HASH for this build.')
+        def output = destination.get().asFile
+        output.parentFile.mkdirs()
+        output.text = groovy.json.JsonOutput.toJson([apiID: id, apiHash: hash])
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'configureTelegram' }
+
+// Shared public settings only; an unconfigured build deliberately stays locked.
+tasks.register('configureAccess', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    commandLine 'python3', 'scripts/configure-access.py', '--out', layout.buildDirectory.file('generated/telegramAssets/cinespice-access.json').get().asFile.absolutePath
+}
+tasks.named('preBuild').configure { dependsOn 'configureAccess' }
+android.sourceSets.test.resources.srcDir('../../Tests/Fixtures')

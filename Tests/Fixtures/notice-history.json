@@ -1,0 +1,142 @@
+[
+  {
+    "id": 10,
+    "date": 1800000010,
+    "chat_id": 123456,
+    "sender_id": {
+      "@type": "messageSenderUser",
+      "user_id": 123456
+    },
+    "content": {
+      "@type": "messageText",
+      "text": {
+        "text": "Text-only announcement"
+      }
+    },
+    "reply_markup": {
+      "@type": "replyMarkupInlineKeyboard",
+      "rows": [
+        [
+          {
+            "type": {
+              "@type": "inlineKeyboardButtonTypeCallback",
+              "data": "bm90aWNlOjE6YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
+            }
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "id": 20,
+    "date": 1800000020,
+    "chat_id": 123456,
+    "sender_id": {
+      "@type": "messageSenderUser",
+      "user_id": 123456
+    },
+    "content": {
+      "@type": "messageText",
+      "text": {
+        "text": "Photo caption"
+      }
+    },
+    "reply_markup": {
+      "@type": "replyMarkupInlineKeyboard",
+      "rows": [
+        [
+          {
+            "type": {
+              "@type": "inlineKeyboardButtonTypeCallback",
+              "data": "bm90aWNlOjE6YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
+            }
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "id": 30,
+    "date": 1800000030,
+    "chat_id": 123456,
+    "sender_id": {
+      "@type": "messageSenderUser",
+      "user_id": 123456
+    },
+    "content": {
+      "@type": "messageText",
+      "text": {
+        "text": "Cleared"
+      }
+    },
+    "reply_markup": {
+      "@type": "replyMarkupInlineKeyboard",
+      "rows": [
+        [
+          {
+            "type": {
+              "@type": "inlineKeyboardButtonTypeCallback",
+              "data": "bm90aWNlLWNsZWFyOjE6YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI="
+            }
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "id": 40,
+    "date": 1800000040,
+    "chat_id": 123456,
+    "sender_id": {
+      "@type": "messageSenderUser",
+      "user_id": 123456
+    },
+    "content": {
+      "@type": "messageText",
+      "text": {
+        "text": "New announcement"
+      }
+    },
+    "reply_markup": {
+      "@type": "replyMarkupInlineKeyboard",
+      "rows": [
+        [
+          {
+            "type": {
+              "@type": "inlineKeyboardButtonTypeCallback",
+              "data": "bm90aWNlOjE6Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M="
+            }
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "id": 50,
+    "date": 1800000030,
+    "chat_id": 123456,
+    "sender_id": {
+      "@type": "messageSenderUser",
+      "user_id": 123456
+    },
+    "content": {
+      "@type": "messageText",
+      "text": {
+        "text": "Cleared"
+      }
+    },
+    "reply_markup": {
+      "@type": "replyMarkupInlineKeyboard",
+      "rows": [
+        [
+          {
+            "type": {
+              "@type": "inlineKeyboardButtonTypeCallback",
+              "data": "bm90aWNlLWRlbGV0ZToxOmFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFh"
+            }
+          }
+        ]
+      ]
+    }
+  }
+]

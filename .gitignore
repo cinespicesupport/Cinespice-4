@@ -1,0 +1,33 @@
+build/
+DerivedData/
+.build/
+.swiftpm/
+Pods/
+*.xcworkspace/
+*.xcodeproj/
+.DS_Store
+*.mobileprovision
+*.p12
+telegram-config.local.json
+TelegramSession/
+
+# Android local tools, native dependency cache, and signing material
+android/.gradle/
+android/local.properties
+android/app/src/main/jniLibs/
+*.jks
+*.keystore
+
+Resources/TelegramBuildCredentials.plist
+
+android/telegram-config.local.json
+android/.kotlin/
+
+# Access operator secrets and generated public build resources
+/access-config.local.json
+/Resources/CinespiceAccess.json
+/licensing-bot/.env
+/licensing-bot/.venv/
+/licensing-bot/state/
+__pycache__/
+*.pyc

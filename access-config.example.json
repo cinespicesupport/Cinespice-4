@@ -1,0 +1,12 @@
+{
+  "botUsername": "your_access_bot",
+  "botUserID": "123456789",
+  "publicKey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE8AYLVdhLaKjj8AGX30g6GDLXI4bcw7cnib/YhiJ+7C8FTxq6nUC0QetH3heVgpyZjylbEOB6f10AN/nXjs/34Q==",
+  "contactURL": "https://t.me/your_contact_group",
+  "channels": [
+    {
+      "title": "Community",
+      "url": "https://t.me/your_community"
+    }
+  ]
+}

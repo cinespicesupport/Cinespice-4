@@ -1,0 +1,108 @@
+name: Build Cinespice IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - ".github/workflows/ios-ipa.yml"
+      - "Package.swift"
+      - "Podfile"
+      - "Podfile.lock"
+      - "project.yml"
+      - "Sources/**"
+      - "Resources/**"
+      - "Support/**"
+      - "Tests/**"
+      - "scripts/**"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - ".github/workflows/ios-ipa.yml"
+      - "Package.swift"
+      - "Podfile"
+      - "Podfile.lock"
+      - "project.yml"
+      - "Sources/**"
+      - "Resources/**"
+      - "Support/**"
+      - "Tests/**"
+      - "scripts/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test streaming protocol and scheduling
+        run: swift test
+      - name: Install build tools
+        run: |
+          brew install xcodegen cocoapods
+      - name: Record build tool versions
+        run: |
+          xcodebuild -version
+          swift --version
+          xcodegen --version
+          pod --version
+      - name: Configure Telegram credentials
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: python3 scripts/configure-telegram.py
+      - name: Configure public access settings
+        env:
+          CINESPICE_ACCESS_CONFIG_JSON: ${{ vars.CINESPICE_ACCESS_CONFIG_JSON }}
+        run: python3 scripts/configure-access.py
+      - name: Generate project and resolve TDLib
+        run: |
+          xcodegen generate --spec project.yml
+          xcodebuild -resolvePackageDependencies -project Tevee.xcodeproj -scheme Tevee
+      - name: Install VLC
+        run: |
+          pod install --project-directory=.
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild \
+            -workspace Tevee.xcworkspace \
+            -scheme Tevee \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -resultBundlePath build/Tevee.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            build 2>&1 | tee build/xcodebuild.log
+      - name: Package IPA for SideStore signing
+        run: |
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/Tevee.app"
+          test -d "$APP_PATH"
+          python3 scripts/verify-app-metadata.py "$APP_PATH/Info.plist"
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          (cd build/ipa && zip -r ../Cinespice-unsigned.ipa Payload)
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Cinespice-unsigned-ipa
+          path: build/Cinespice-unsigned.ipa
+          if-no-files-found: error
+      - name: Upload build diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: Cinespice-build-diagnostics
+          path: |
+            build/xcodebuild.log
+            build/Tevee.xcresult
+            Podfile.lock
+            Tevee.xcworkspace/xcshareddata/swiftpm/Package.resolved
+            Tevee.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+          if-no-files-found: ignore
+          retention-days: 7

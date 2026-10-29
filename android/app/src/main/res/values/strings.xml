@@ -1,0 +1,10 @@
+<resources>
+    <string name="playback_position_unavailable">Position could not be reached. Retry, start over, or download the file.</string>
+    <string name="playback_seeking">Seeking…</string>
+    <string name="download_reopen">Download started. Manage it in Downloads, or reopen to stream now.</string>
+    <string name="download_retry">Download could not start. Check your connection and storage, then try Download again.</string>
+    <string name="playback_remaining_time">−%1$s</string>
+    <string name="playback_failed">The player could not play this file. Close and try Download.</string>
+    <string name="track_importing">Importing external track…</string>
+    <string name="track_import_failed">Import failed: %1$s</string>
+</resources>
