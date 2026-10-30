@@ -41,6 +41,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(settings.ttl, 3600)
         self.assertEqual(settings.key_path, Path('state/signing-key.pem'))
 
+    def test_announcement_channel_must_be_an_optional_configured_channel(self):
+        channels = json.dumps([{'id': -1002, 'title': 'Updates', 'url': 'https://t.me/community'}])
+        with patch.dict(os.environ, dict(self.env, REQUIRED_CHANNELS=channels, ANNOUNCEMENT_CHANNEL_ID='-1002'), clear=True):
+            self.assertEqual(Settings.load().announcement_channel, -1002)
+        with patch.dict(os.environ, dict(self.env, REQUIRED_CHANNELS=channels, ANNOUNCEMENT_CHANNEL_ID='-9999'), clear=True):
+            with self.assertRaisesRegex(ValueError, 'ANNOUNCEMENT_CHANNEL_ID'): Settings.load()
+
     def test_missing_and_empty_required_variables_are_named_without_values(self):
         for name in self.env:
             for value in (None, '', '   '):

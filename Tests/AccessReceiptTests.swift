@@ -30,6 +30,27 @@ final class AccessReceiptTests: XCTestCase {
         XCTAssertThrowsError(try AccessReceipt.decode(token, account: "7", nonce: nonce, now: 1800000001, verify: { _, _ in false }))
         XCTAssertThrowsError(try AccessReceipt.decode("CSP1.bad!.bad!", account: "7", nonce: nonce, now: 1800000001, verify: verify))
     }
+    func testOnlySignedPersistentGrantRestoresAfterExpiry() throws {
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "access-persistent", withExtension: "json", subdirectory: "Fixtures"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String])
+        let token = fixture["token"]!, nonce = fixture["nonce"]!, device = fixture["device"]!
+        let verify: (Data, Data) -> Bool
+        #if canImport(CryptoKit)
+        let key = try P256.Signing.PublicKey(derRepresentation: XCTUnwrap(Data(base64Encoded: fixture["publicKey"]!)))
+        verify = { data, signature in
+            guard let sig = try? P256.Signing.ECDSASignature(derRepresentation: signature) else { return false }
+            return key.isValidSignature(sig, for: data)
+        }
+        #else
+        verify = { _, _ in true }
+        #endif
+        let later: Int64 = 1800100000
+        XCTAssertThrowsError(try AccessReceipt.decode(token, account: "7", nonce: nonce, now: later, device: device, verify: verify))
+        XCTAssertTrue(try XCTUnwrap(AccessReceipt.decode(token, account: "7", nonce: nonce, now: later, device: device, allowStored: true, verify: verify).persistent))
+        XCTAssertThrowsError(try AccessReceipt.decode(token, account: "8", nonce: nonce, now: later, device: device, allowStored: true, verify: verify))
+        XCTAssertThrowsError(try AccessReceipt.decode(token, account: "7", nonce: nonce, now: later, device: String(repeating: "c", count: 24), allowStored: true, verify: verify))
+        XCTAssertThrowsError(try AccessReceipt.decode(token, account: "7", nonce: nonce, now: later, device: device, allowStored: true, verify: { _, _ in false }))
+    }
     func testInstallationBoundReceipts() throws {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "access-device", withExtension: "json", subdirectory: "Fixtures"))
         let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: String])
@@ -48,6 +69,7 @@ final class AccessReceiptTests: XCTestCase {
             let receipt = try AccessReceipt.decode(fixture[status]!, account: "7", nonce: nonce, now: 1800000001, device: device, verify: verify)
             XCTAssertEqual(receipt.status, status); XCTAssertEqual(receipt.revision, 3)
             XCTAssertEqual(receipt.missing, status == "join_required" ? [0] : [])
+            XCTAssertThrowsError(try AccessReceipt.decode(fixture[status]!, account: "7", nonce: nonce, now: 1800100000, device: device, allowStored: true, verify: verify))
             XCTAssertThrowsError(try AccessReceipt.decode(fixture[status]!, account: "7", nonce: nonce, now: 1800000001, device: String(repeating: "d", count: 24), verify: verify))
         }
     }

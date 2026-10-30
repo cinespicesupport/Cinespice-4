@@ -163,8 +163,9 @@ remain device acceptance work; emulator results do not establish those behaviors
 The four themes now match iOS: Cinespice Glass, Cinespice Dark (default), Crimson
 Cinema and Silver Screen. Navigation is Home, Search, Library and Downloads;
 Library includes New Releases, Favorites, Watchlist and History. Channel rows
-contain up to 15 portrait posters. Details offers Play, Heart and Plus and retains
-the original filename. The player uses the existing VLC engine with native icon
+contain up to 15 portrait posters. Details offers Play, Heart, Plus and a download
+action, and retains the original filename. Download cards show clear pause, resume,
+retry or save buttons for their current state. The player uses the existing VLC engine with native icon
 controls; Play/Pause has no waveform.
 
 Builds require `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` (the same GitHub secrets

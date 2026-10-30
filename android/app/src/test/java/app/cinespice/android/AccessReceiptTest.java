@@ -22,6 +22,20 @@ public class AccessReceiptTest {
         String tampered="CSP1."+Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toString().getBytes(StandardCharsets.UTF_8))+"."+parts[2];
         assertThrows(Exception.class,()->AccessReceipt.verify(tampered,key,8,nonce,1800000001L));
     }
+    @Test public void signedPersistentGrantRestoresOnlyForSameAccountAndDevice() throws Exception {
+        JSONObject fixture;
+        try (java.io.InputStream input = getClass().getResourceAsStream("/access-persistent.json")) {
+            assertNotNull(input); fixture = new JSONObject(new String(input.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        String token=fixture.getString("token"), key=fixture.getString("publicKey"), nonce=fixture.getString("nonce"), device=fixture.getString("device");
+        long later=1800100000L;
+        assertThrows(Exception.class, () -> AccessReceipt.verify(token,key,7,nonce,later,device));
+        assertTrue(AccessReceipt.verify(token,key,7,nonce,later,device,true).persistent);
+        assertThrows(Exception.class, () -> AccessReceipt.verify(token,key,8,nonce,later,device,true));
+        assertThrows(Exception.class, () -> AccessReceipt.verify(token,key,7,nonce,later,"c".repeat(24),true));
+        String tampered = token.substring(0, token.length()-2) + "xx";
+        assertThrows(Exception.class, () -> AccessReceipt.verify(tampered,key,7,nonce,later,device,true));
+    }
     @Test public void deviceBoundGrantsAndRevocations() throws Exception {
         JSONObject fixture;
         try (java.io.InputStream input = getClass().getResourceAsStream("/access-device.json")) {
@@ -36,6 +50,7 @@ public class AccessReceiptTest {
             assertThrows(Exception.class,()->AccessReceipt.verify(token,key,7,nonce,1800000001L,"d".repeat(24)));
             assertThrows(Exception.class,()->AccessReceipt.verify(token,key,8,nonce,1800000001L,device));
             assertThrows(Exception.class,()->AccessReceipt.verify(token,key,7,nonce,1800003600L,device));
+            assertThrows(Exception.class,()->AccessReceipt.verify(token,key,7,nonce,1800100000L,device,true));
         }
     }
 }

@@ -17,9 +17,6 @@ class AccessService:
         try:
             if not is_member(await bot.get_chat_member(self.settings.paid_group, uid)):
                 return 'unpaid'
-            for channel in self.settings.channels:
-                if not is_member(await bot.get_chat_member(channel['id'], uid)):
-                    return 'join_required'
         except RetryAfter:
             if propagate_rate_limit: raise
             return 'unavailable'
@@ -33,12 +30,16 @@ class AccessService:
         if not self.store.started(uid): return 'not_started', False, []
         try:
             paid = not is_member(await bot.get_chat_member(self.settings.paid_group, uid))
-            missing = []
-            for index, channel in enumerate(self.settings.channels):
-                if not is_member(await bot.get_chat_member(channel['id'], uid)): missing.append(index)
-            return ('unpaid' if paid else 'join_required' if missing else 'authorized'), paid, missing
         except TelegramError:
             return 'unavailable', False, []
+        # Updates channels are optional: failure to look them up must not deny access.
+        missing = []
+        for index, channel in enumerate(self.settings.channels):
+            try:
+                if not is_member(await bot.get_chat_member(channel['id'], uid)): missing.append(index)
+            except TelegramError:
+                pass
+        return ('unpaid' if paid else 'authorized'), paid, missing
 
     async def receipt(self, bot, uid: int, nonce: str):
         status = await self.eligibility(bot, uid)

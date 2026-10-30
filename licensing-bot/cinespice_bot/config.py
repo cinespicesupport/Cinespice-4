@@ -31,6 +31,7 @@ class Settings:
     database: Path
     ttl: int
     chat_group_url: str = ""
+    announcement_channel: int = 0
 
     @classmethod
     def load(cls):
@@ -72,8 +73,11 @@ class Settings:
             raise ValueError('BOT_USER_ID must be positive and PAID_GROUP_ID negative')
         if group in {x['id'] for x in channels}:
             raise ValueError('Keep the private paid group separate from required community channels')
+        announcement = int(env.get('ANNOUNCEMENT_CHANNEL_ID') or 0)
+        if announcement and announcement not in {x['id'] for x in channels}:
+            raise ValueError('ANNOUNCEMENT_CHANNEL_ID must identify a configured updates channel')
         return cls(env['BOT_TOKEN'], username, bot_id, group, admins,
                    public_url(env['CONTACT_URL']), tuple(channels),
                    Path(env.get('SIGNING_KEY', 'state/signing-key.pem')),
                    Path(env.get('DATABASE', 'state/bot.sqlite3')), ttl,
-                   public_url(env['CHAT_GROUP_URL']) if env.get('CHAT_GROUP_URL') else '')
+                   public_url(env['CHAT_GROUP_URL']) if env.get('CHAT_GROUP_URL') else '', announcement)

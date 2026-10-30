@@ -220,7 +220,7 @@ internal val destinations = listOf(Destination("home", "Home", Icons.Default.Hom
                 }
             }
             if (videos.isEmpty() && model.page != "home" && !(model.page == "search" && model.query.isNotBlank())) item(span = { GridItemSpan(maxLineSpan) }) {
-                EmptyState(when (model.page) { "search" -> if (model.query.isBlank()) "Search your selected channels" else if (model.searching) "Searching…" else "No matching videos"; "collection" -> if (model.collectionQuery.isBlank()) "No videos loaded yet" else if (model.collectionSearching) "Searching this channel…" else "No matching videos"; "library" -> "A little inspiration for later"; "downloads" -> "Nothing downloaded yet"; "history" -> "Your next film starts here"; else -> "Your cinema starts here" }, when (model.page) { "search" -> "Enter a title or filename. Only channels you select are searched."; "collection" -> if (model.collectionQuery.isBlank()) "Load this channel's videos to start browsing." else "Search is limited to this channel."; "library" -> when (model.savedList) { "New Releases" -> "Load videos from your selected channels to see recent additions."; "History" -> "Videos you watch will appear here."; else -> "Use a video's details to add it to ${model.savedList}." }; "downloads" -> "Choose Download from a video's menu."; "history" -> "Videos you watch will appear here."; else -> "Select your channels using the Channels button." })
+                EmptyState(when (model.page) { "search" -> if (model.query.isBlank()) "Search your selected channels" else if (model.searching) "Searching…" else "No matching videos"; "collection" -> if (model.collectionQuery.isBlank()) "No videos loaded yet" else if (model.collectionSearching) "Searching this channel…" else "No matching videos"; "library" -> "A little inspiration for later"; "downloads" -> "Nothing downloaded yet"; "history" -> "Your next film starts here"; else -> "Your cinema starts here" }, when (model.page) { "search" -> "Enter a title or filename. Only channels you select are searched."; "collection" -> if (model.collectionQuery.isBlank()) "Load this channel's videos to start browsing." else "Search is limited to this channel."; "library" -> when (model.savedList) { "New Releases" -> "Load videos from your selected channels to see recent additions."; "History" -> "Videos you watch will appear here."; else -> "Use a video's details to add it to ${model.savedList}." }; "downloads" -> "Choose Download from a video's details or menu."; "history" -> "Videos you watch will appear here."; else -> "Select your channels using the Channels button." })
             }
             items(videos, key = { it.key() }) { video -> Poster(activity, model, video) }
             if (model.page == "search" && model.query.isNotBlank()) item(span = { GridItemSpan(maxLineSpan) }) {
@@ -326,15 +326,48 @@ internal val destinations = listOf(Destination("home", "Home", Icons.Default.Hom
         VideoControls(activity, video) { details = true }
         model.downloadStates[SavedStore.id(video)]?.let { state ->
             Text(state, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            if (state == "Downloading") TextButton(onClick = { model.pauseDownload(video) }, enabled = !model.busy) { Text("Pause download") }
-            if (state == "Downloaded") TextButton(onClick = { activity.export(video) }) { Text("Save to device") }
-            if (state == "Retry download" || state == "Cancelled" || state == "Paused") {
-                if (state == "Retry download") Text("Check your connection and available storage, then retry.", style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { model.download(video) }, enabled = !model.busy && SavedStore.id(video) !in model.preparing) { Text(if (state == "Retry download") "Retry download" else "Resume download") }
-            }
+            if (state == "Retry download") Text("Check your connection and available storage, then retry.", style = MaterialTheme.typography.bodySmall)
+            DownloadAction(activity, model, video)
         }
     }
     if (details) VideoDetails(activity, model, video) { details = false }
+}
+@Composable private fun DownloadAction(activity: MainActivity, model: LibraryModel, video: Video, showInitial: Boolean = false) {
+    val id = SavedStore.id(video)
+    val state = if (id in model.preparing) "Preparing" else model.downloadStates[id]
+    val label = when (state) {
+        null -> if (showInitial) "Download" else return
+        "Downloading" -> "Pause download"
+        "Paused", "Cancelled" -> "Resume download"
+        "Retry download" -> "Retry download"
+        "Downloaded" -> "Save to device"
+        "Preparing" -> "Preparing…"
+        "Pausing" -> "Pausing…"
+        else -> return
+    }
+    val icon = when (state) {
+        "Downloading" -> CineIcons.Pause
+        "Paused", "Cancelled" -> Icons.Default.PlayArrow
+        else -> CineIcons.Download
+    }
+    Button(
+        onClick = {
+            when (state) {
+                "Downloading" -> model.pauseDownload(video)
+                "Downloaded" -> activity.export(video)
+                else -> model.download(video)
+            }
+        },
+        enabled = state !in listOf("Preparing", "Pausing") && (state == "Downloaded" || !model.busy),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "$label ${video.displayTitle}" },
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color(Ui.action(activity)), contentColor = Color(Ui.onAction(activity))),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+    ) {
+        Icon(icon, null, Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label)
+    }
 }
 @Composable private fun VideoControls(activity: MainActivity, video: Video, info: () -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -347,7 +380,7 @@ internal val destinations = listOf(Destination("home", "Home", Icons.Default.Hom
 }
 @Composable private fun VideoDetails(activity: MainActivity, model: LibraryModel, video: Video, close: () -> Unit) {
     val id = SavedStore.id(video)
-    ModalBottomSheet(onDismissRequest = close, containerColor = MaterialTheme.colorScheme.background) {
+    ModalBottomSheet(onDismissRequest = close, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 24.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) { Text("Details", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge); TextButton(onClick = close) { Text("Done") } }
             ArtworkImage(model, video, Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(20.dp)), ContentScale.Fit)
@@ -356,6 +389,7 @@ internal val destinations = listOf(Destination("home", "Home", Icons.Default.Hom
                 IconToggleButton(checked = id in model.favorites, enabled = !model.busy, onCheckedChange = { model.toggle(video, "Favorites") }) { Icon(if (id in model.favorites) Icons.Default.Favorite else Icons.Default.FavoriteBorder, if (id in model.favorites) "Remove from Favorites" else "Add to Favorites") }
                 IconToggleButton(checked = id in model.watchlist, enabled = !model.busy, onCheckedChange = { model.toggle(video, "Watchlist") }) { Icon(if (id in model.watchlist) Icons.Default.Check else Icons.Default.Add, if (id in model.watchlist) "Remove from Watchlist" else "Add to Watchlist") }
             }
+            DownloadAction(activity, model, video, showInitial = true)
             Text("About this video", style = MaterialTheme.typography.titleMedium)
             Text(video.name)
             if (video.caption.isNotBlank() && video.caption.trim() != video.name.trim()) Text(video.caption, color = MaterialTheme.colorScheme.onSurfaceVariant)

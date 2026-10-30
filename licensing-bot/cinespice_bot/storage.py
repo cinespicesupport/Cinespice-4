@@ -17,6 +17,9 @@ class Store:
             PRIMARY KEY(campaign,user_id));
         ''')
         self.db.executescript("""
+          CREATE TABLE IF NOT EXISTS paid_membership_checks (
+            user_id INTEGER PRIMARY KEY, member INTEGER, next_check INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS active_devices (user_id INTEGER PRIMARY KEY, device TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS access_state (user_id INTEGER PRIMARY KEY, revoked INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS access_events (user_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, next_try INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS notice_clears (user_id INTEGER PRIMARY KEY, campaign TEXT NOT NULL, next_try INTEGER NOT NULL DEFAULT 0);
@@ -31,6 +34,7 @@ class Store:
     def start(self, uid: int):
         with self.db:
             self.db.execute('INSERT OR IGNORE INTO users VALUES (?,?)', (uid, int(time.time())))
+            self.db.execute('INSERT OR IGNORE INTO paid_membership_checks VALUES (?,NULL,?)', (uid, int(time.time())+900))
             self.db.execute('UPDATE notice_clears SET next_try=0 WHERE user_id=?', (uid,))
             self.db.execute('UPDATE notice_deletes SET next_try=0 WHERE user_id=?', (uid,))
 
@@ -51,6 +55,59 @@ class Store:
             if self.started(uid):
                 self.db.execute('INSERT INTO access_events(user_id,revision) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,next_try=0', (uid,revision))
         return revision
+
+    def authorize_device(self, uid, device, *, transfer):
+        # /start explicitly activates a device; /check may adopt a legacy account
+        # only if no device is registered, and must never steal another slot.
+        with self.db:
+            row = self.db.execute('SELECT device FROM active_devices WHERE user_id=?', (uid,)).fetchone()
+            if row and row[0] != device and not transfer:
+                return False
+            if row and row[0] != device:
+                self.db.execute('INSERT OR IGNORE INTO access_state(user_id) VALUES (?)', (uid,))
+                self.db.execute('UPDATE access_state SET revision=revision+1 WHERE user_id=?', (uid,))
+                revision = self.access_state(uid)[1]
+                self.db.execute('INSERT INTO access_events(user_id,revision) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,next_try=0', (uid, revision))
+            self.db.execute('INSERT INTO active_devices VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET device=excluded.device', (uid,device))
+        return True
+
+    def schedule_membership_reconciliation(self):
+        # Existing databases have no snapshot yet. Preserve known membership across restarts.
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO paid_membership_checks(user_id) SELECT id FROM users')
+            self.db.execute('UPDATE paid_membership_checks SET next_check=0')
+
+    def next_membership_check(self):
+        return self.db.execute("""SELECT checks.user_id, checks.member, COALESCE(state.revision,0)
+            FROM paid_membership_checks AS checks
+            LEFT JOIN access_state AS state ON checks.user_id=state.user_id
+            WHERE checks.next_check<=? ORDER BY checks.next_check,checks.user_id LIMIT 1""", (int(time.time()),)).fetchone()
+
+    def observe_paid_membership(self, uid, member):
+        # An event is an observation, not a grant. A fresh lookup follows to handle
+        # old Telegram updates delivered after a restart.
+        with self.db:
+            self.db.execute('UPDATE paid_membership_checks SET member=?,next_check=0 WHERE user_id=?', (int(member), uid))
+
+    def complete_membership_check(self, uid, previous, revision, member):
+        with self.db:
+            row = self.db.execute('SELECT member FROM paid_membership_checks WHERE user_id=?', (uid,)).fetchone()
+            if row is None:
+                return
+            # Membership updates can arrive while the network request is in flight.
+            if row[0] != previous or self.access_state(uid)[1] != revision:
+                self.db.execute('UPDATE paid_membership_checks SET next_check=0 WHERE user_id=?', (uid,))
+                return
+            if previous is None or bool(previous) != member:
+                self.db.execute('INSERT OR IGNORE INTO access_state(user_id) VALUES (?)', (uid,))
+                self.db.execute('UPDATE access_state SET revision=revision+1 WHERE user_id=?', (uid,))
+                new_revision = self.access_state(uid)[1]
+                self.db.execute('INSERT INTO access_events(user_id,revision) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET revision=excluded.revision,next_try=0', (uid,new_revision))
+            self.db.execute('UPDATE paid_membership_checks SET member=?,next_check=? WHERE user_id=?', (int(member),int(time.time())+900,uid))
+
+    def retry_membership_check(self, uid, seconds):
+        with self.db:
+            self.db.execute('UPDATE paid_membership_checks SET next_check=? WHERE user_id=?', (int(time.time())+seconds,uid))
 
     def next_access_event(self):
         return self.db.execute('SELECT user_id,revision FROM access_events WHERE next_try<=? ORDER BY next_try,user_id LIMIT 1', (int(time.time()),)).fetchone()
@@ -73,6 +130,9 @@ class Store:
     def forget_receipt(self, uid, nonce):
         with self.db:
             self.db.execute('DELETE FROM receipts WHERE user_id=? AND nonce=?', (uid,nonce))
+
+    def campaign_exists(self, campaign: str) -> bool:
+        return self.db.execute('SELECT 1 FROM campaigns WHERE id=?', (campaign,)).fetchone() is not None
 
     def queue(self, campaign: str, chat: int, message: int) -> int:
         with self.db:

@@ -34,9 +34,9 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.store.start(7)
         bot.get_chat_member.side_effect = [NS(status='left')]
         self.assertEqual(await self.service.eligibility(bot, 7), 'unpaid')
-        bot.get_chat_member.side_effect = [NS(status='member'), NS(status='left')]
-        self.assertEqual(await self.service.eligibility(bot, 7), 'join_required')
-        bot.get_chat_member.side_effect = [NS(status='administrator'), NS(status='restricted', is_member=True)]
+        bot.get_chat_member.side_effect = [NS(status='member')]
+        self.assertEqual(await self.service.eligibility(bot, 7), 'authorized')
+        bot.get_chat_member.side_effect = [NS(status='administrator')]
         self.assertEqual(await self.service.eligibility(bot, 7), 'authorized')
         bot.get_chat_member.side_effect = TelegramError('synthetic outage')
         self.assertEqual(await self.service.eligibility(bot, 7), 'unavailable')
@@ -54,6 +54,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(InvalidSignature): key.verify(raw, (prefix+'.'+payload+'x').encode(), ec.ECDSA(hashes.SHA256()))
         value = json.loads(base64.urlsafe_b64decode(payload+'='*(-len(payload)%4)))
         self.assertEqual((value['uid'],value['nonce'],value['exp']),('7','a'*32,1800003600))
+        with self.assertRaises(ValueError): self.signer.receipt(7, 'a'*32, 'revoked', 60, device='b'*24, persistent=True)
         for args in [(0,'a'*32,'authorized',3600),(7,'wrong','authorized',3600),(7,'a'*32,'bad',3600),(7,'a'*32,'authorized',86401)]:
             with self.assertRaises(ValueError): self.signer.receipt(*args)
         with self.assertRaises(FileExistsError): generate_key(self.path/'key.pem')
@@ -78,6 +79,52 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         token=update.effective_message.reply_text.call_args_list[-1].args[0]
         value=json.loads(base64.urlsafe_b64decode(token.split('.')[1]+'=='))
         self.assertEqual(value['uid'],'7'); self.assertEqual(value['status'],'authorized')
+    async def test_paid_member_can_activate_and_transfer_one_device(self):
+        async def request(command, device, nonce):
+            callbacks, _ = self.callbacks()  # independent command cooldown
+            update = self.update(text='/' + command)
+            update.effective_message.message_id = 123
+            update.effective_message.reply_text.return_value = NS(message_id=456)
+            args = ['cs2_' + device + '_' + nonce] if command == 'start' else [nonce, device]
+            bot = NS(get_chat_member=AsyncMock(return_value=NS(status='member')))
+            await callbacks[command](update, NS(args=args, bot=bot))
+            token = update.effective_message.reply_text.call_args_list[-1].args[0]
+            return json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))
+        first = await request('start', 'a'*24, '1'*32)
+        self.assertEqual((first['status'], first['persistent'], first['device']), ('authorized', True, 'a'*24))
+        second = await request('start', 'b'*24, '2'*32)
+        self.assertEqual((second['status'], second['revision']), ('authorized', 1))
+        self.assertEqual(self.store.next_access_event(), (7, 1))
+        old = await request('check', 'a'*24, '3'*32)
+        self.assertEqual(old['status'], 'other_device')
+        self.assertNotIn('persistent', old)
+        same = await request('check', 'b'*24, '4'*32)
+        self.assertEqual((same['status'], same['revision']), ('authorized', 1))
+        self.store.close(); self.store = Store(self.path/'bot.db')
+        self.assertFalse(self.store.authorize_device(7, 'a'*24, transfer=False))
+
+    async def test_membership_change_during_verification_cannot_sign_stale_grant(self):
+        callbacks, _ = self.callbacks()
+        update = self.update(text='/start')
+        update.effective_message.message_id = 123
+        update.effective_message.reply_text.return_value = NS(message_id=456)
+        async def lookup(chat, uid):
+            if chat == -1002: self.store.access_changed(uid)
+            return NS(status='member')
+        await callbacks['start'](update, NS(args=['cs2_' + 'a'*24 + '_' + 'b'*32],
+                                           bot=NS(get_chat_member=AsyncMock(side_effect=lookup))))
+        token = update.effective_message.reply_text.call_args_list[-1].args[0]
+        value = json.loads(base64.urlsafe_b64decode(token.split('.')[1] + '=='))
+        self.assertEqual(value['status'], 'unavailable')
+        self.assertIsNone(self.store.db.execute('SELECT device FROM active_devices WHERE user_id=7').fetchone())
+
+    async def test_optional_channel_does_not_block_activation(self):
+        self.store.start(7)
+        bot = NS(get_chat_member=AsyncMock(side_effect=[NS(status='member'), NS(status='left')]))
+        self.assertEqual(await self.service.requirements(bot, 7), ('authorized', False, [0]))
+        bot.get_chat_member.side_effect = [NS(status='member'), TelegramError('channel unavailable')]
+        self.assertEqual(await self.service.requirements(bot, 7), ('authorized', False, []))
+
     async def test_invalid_nonce_and_group_chat_never_issue_receipt(self):
         callbacks,_=self.callbacks()
         for update,args in [(self.update(),['42']), (self.update(chat_type='group'),['cs_'+'a'*32])]:
@@ -118,6 +165,58 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.service.requirements(bot,7), ('unpaid',True,[0]))
         bot.get_chat_member.side_effect = TelegramError('outage')
         self.assertEqual(await self.service.requirements(bot,7), ('unavailable',False,[]))
+
+    def test_membership_reconciliation_detects_changes_after_restart(self):
+        self.store.start(7)
+        self.store.observe_paid_membership(7, True)
+        self.store.schedule_membership_reconciliation()
+        uid, old, revision = self.store.next_membership_check()
+        self.store.complete_membership_check(uid, old, revision, False)
+        self.assertEqual(self.store.next_access_event(), (7, 1))
+        self.store.finish_access_event(7, 1)
+        self.store.close(); self.store = Store(self.path/'bot.db')
+        self.store.schedule_membership_reconciliation()
+        uid, old, revision = self.store.next_membership_check()
+        self.assertEqual(old, 0)
+        self.store.complete_membership_check(uid, old, revision, True)
+        self.assertEqual(self.store.next_access_event(), (7, 2))
+        self.store.finish_access_event(7, 2)
+        self.store.schedule_membership_reconciliation()
+        uid, old, revision = self.store.next_membership_check()
+        self.store.complete_membership_check(uid, old, revision, True)
+        self.assertIsNone(self.store.next_access_event())
+
+    def test_membership_reconciliation_handles_unknown_and_inflight_update(self):
+        self.store.start(7)
+        self.store.schedule_membership_reconciliation()
+        uid, old, revision = self.store.next_membership_check()
+        # A group event arrives while the lookup is awaiting Telegram.
+        self.store.access_changed(7)
+        self.store.observe_paid_membership(7, False)
+        self.store.complete_membership_check(uid, old, revision, True)
+        self.assertEqual(self.store.next_access_event(), (7, 1))
+        self.assertEqual(self.store.next_membership_check(), (7, 0, 1))
+        self.store.finish_access_event(7, 1)
+        uid, old, revision = self.store.next_membership_check()
+        self.store.complete_membership_check(uid, old, revision, False)
+        self.assertIsNone(self.store.next_access_event())
+        self.store.start(8)
+        self.store.schedule_membership_reconciliation()
+        self.store.complete_membership_check(*self.store.next_membership_check(), False)
+        uid, old, revision = self.store.next_membership_check()
+        self.assertEqual((uid, old), (8, None))
+        self.store.complete_membership_check(uid, old, revision, True)
+        self.assertEqual(self.store.next_access_event(), (8, 1))
+
+    def test_membership_retry_preserves_known_status_and_restart_retries(self):
+        self.store.start(7); self.store.observe_paid_membership(7, True)
+        self.store.schedule_membership_reconciliation()
+        self.store.retry_membership_check(7, 30)
+        self.assertIsNone(self.store.next_membership_check())
+        self.assertIsNone(self.store.next_access_event())
+        self.store.close(); self.store=Store(self.path/'bot.db')
+        self.store.schedule_membership_reconciliation()
+        self.assertEqual(self.store.next_membership_check(), (7, 1, 0))
 
     def test_clear_queue_survives_restart_and_cancels_only_old_pending_broadcasts(self):
         self.store.start(7); self.store.start(8)
