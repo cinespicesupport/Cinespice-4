@@ -5,6 +5,7 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from datetime import datetime, timezone
 
 from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ChatMemberStatus
@@ -136,11 +137,23 @@ def build_application(settings, store, signer, *, request=None):
                 store.observe_paid_membership(event.new_chat_member.user.id, is_member(event.new_chat_member))
         await welcome(update, context)
 
+    async def bot_contact_changed(update, context):
+        event = update.my_chat_member
+        if not event or event.chat.type != ChatType.PRIVATE:
+            return
+        old, new = event.old_chat_member.status, event.new_chat_member.status
+        if (old, new) not in {(ChatMemberStatus.MEMBER, ChatMemberStatus.BANNED),
+                              (ChatMemberStatus.BANNED, ChatMemberStatus.MEMBER)}:
+            return
+        blocked = new == ChatMemberStatus.BANNED
+        if store.record_bot_contact_event(update.update_id, event.chat.id, blocked, int(event.date.timestamp())):
+            logging.getLogger('cinespice').info('User %s %s the bot.', event.chat.id, 'blocked' if blocked else 'unblocked')
+
     async def help_command(update, context):
         if update.effective_chat.type != ChatType.PRIVATE: return
         text = 'Cinespice help 🎬\n\nHaving an issue or a question? Join our chat group and ask there.\n/start — About Cinespice and useful links\n/help — Support'
         if update.effective_user.id in settings.admins:
-            text += '\n\nAdmin only: reply to a text/photo/GIF with /broadcast to publish; reply to an announcement with /clear to remove just that broadcast; /clearall removes all app notifications. Also: /stats; /id; /revoke <user ID>; /restore <user ID>.'
+            text += '\n\nAdmin only: reply to a text/photo/GIF with /broadcast to publish; reply to an announcement with /clear to remove just that broadcast; /clearall removes all app notifications. Also: /stats; /botblocks; /id; /revoke <user ID>; /restore <user ID>.'
         await update.effective_message.reply_text(text, reply_markup=welcome_links())
 
     async def identity(update, context):
@@ -166,6 +179,13 @@ def build_application(settings, store, signer, *, request=None):
         if update.effective_chat.type != ChatType.PRIVATE or update.effective_user.id not in settings.admins: return
         users, states = store.stats()
         await update.effective_message.reply_text(f'Activated bot accounts: {users}\nBroadcast delivery states: {json.dumps(states, sort_keys=True)}')
+
+    async def bot_blocks(update, context):
+        if update.effective_chat.type != ChatType.PRIVATE or update.effective_user.id not in settings.admins: return
+        events = store.recent_bot_contact_events()
+        lines = [f"{datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} — {uid}: {'blocked' if blocked else 'unblocked'}"
+                 for uid, blocked, at in events]
+        await update.effective_message.reply_text('Recent bot block/unblock events:\n' + ('\n'.join(lines) if lines else 'No events recorded.'))
 
     async def broadcast(update, context):
         if update.effective_chat.type != ChatType.PRIVATE or update.effective_user.id not in settings.admins: return
@@ -233,6 +253,17 @@ def build_application(settings, store, signer, *, request=None):
         await query.edit_message_text('This announcement was already cleared.' if count is None else
             f'Removing this announcement from app notifications for {count} accounts. Other announcements remain. Telegram chat copies remain readable.')
 
+    async def acknowledge_delivery(campaign, uid):
+        # Once Telegram accepted the copy, retry only the local acknowledgement.
+        while not stop.is_set():
+            try:
+                store.delivered(campaign, uid)
+                return
+            except Exception as exc:
+                logging.getLogger('cinespice').error('Delivery acknowledgement failed (%s); retrying.', type(exc).__name__)
+            try: await asyncio.wait_for(stop.wait(), timeout=1)
+            except asyncio.TimeoutError: pass
+
     async def deliver(app):
         while not stop.is_set():
             clear = store.next_notice_clear()
@@ -289,7 +320,7 @@ def build_application(settings, store, signer, *, request=None):
                 if not store.delivery_pending(campaign, uid): continue
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton('Cinespice update', callback_data='notice:1:' + campaign)]])
                 await app.bot.copy_message(uid, chat, message, reply_markup=markup)
-                store.delivered(campaign, uid)
+                await acknowledge_delivery(campaign, uid)
                 await asyncio.sleep(0.2)  # At most 5 deliveries/s; membership lookups also consume API budget.
             except Forbidden:
                 store.delivered(campaign, uid, 'blocked')
@@ -315,13 +346,26 @@ def build_application(settings, store, signer, *, request=None):
                     seconds = exc.retry_after.total_seconds() if hasattr(exc.retry_after, 'total_seconds') else exc.retry_after
                     store.retry_membership_check(uid, int(seconds) + 1)
                     delay = min(float(seconds) + 1, 30)
-                except TelegramError:
+                except TelegramError as exc:
                     # An unreachable API is not evidence that the user left.
+                    logging.getLogger('cinespice').warning('Membership check failed (%s); retrying.', type(exc).__name__)
                     store.retry_membership_check(uid, 30)
                     delay = 1
             else:
                 delay = 1
             try: await asyncio.wait_for(stop.wait(), timeout=delay)
+            except asyncio.TimeoutError: pass
+
+    async def supervise_worker(name, run, app):
+        while not stop.is_set():
+            try:
+                await run(app)
+                if stop.is_set(): return
+                logging.getLogger('cinespice').error('%s worker stopped unexpectedly; restarting.', name)
+            except Exception as exc:
+                # Exception details can include Telegram credentials or message contents.
+                logging.getLogger('cinespice').error('%s worker failed (%s); restarting.', name, type(exc).__name__)
+            try: await asyncio.wait_for(stop.wait(), timeout=5)
             except asyncio.TimeoutError: pass
 
     async def channel_announcement(update, context):
@@ -370,14 +414,16 @@ def build_application(settings, store, signer, *, request=None):
         admin_commands = public_commands + [BotCommand(name, description) for name, description in (
             ('broadcast', 'Reply to publish an announcement'), ('clear', 'Reply to remove one announcement'),
             ('clearall', 'Clear all app announcements'), ('stats', 'Broadcast delivery progress'),
+            ('botblocks', 'Recent bot block events'),
             ('id', 'Show account and chat IDs'), ('revoke', 'Revoke a user license'), ('restore', 'Remove a manual revocation'))]
         for uid in settings.admins:
             # Telegram cannot open a private chat until its owner starts the bot.
             try: await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(uid))
             except BadRequest: pass
         store.schedule_membership_reconciliation()
-        worker = asyncio.create_task(deliver(app))
-        membership_worker = asyncio.create_task(reconcile_memberships(app))
+        worker = asyncio.create_task(supervise_worker('Delivery', deliver, app))
+        membership_worker = asyncio.create_task(supervise_worker('Membership', reconcile_memberships, app))
+        logging.getLogger('cinespice').info('Bot initialized; starting polling and membership checks.')
 
     async def shutdown(app):
         stop.set()
@@ -390,6 +436,7 @@ def build_application(settings, store, signer, *, request=None):
             try: await membership_worker
             except asyncio.CancelledError: pass
         store.close()
+        logging.getLogger('cinespice').info('Bot stopped.')
 
     async def error_handler(update, context):
         # PTB/HTTP logs can contain token-bearing URLs or private message contents.
@@ -406,6 +453,7 @@ def build_application(settings, store, signer, *, request=None):
     app.add_handler(CommandHandler('help', help_command))
     app.add_handler(CommandHandler('id', identity))
     app.add_handler(CommandHandler('stats', stats))
+    app.add_handler(CommandHandler('botblocks', bot_blocks))
     app.add_handler(CommandHandler('broadcast', broadcast))
     app.add_handler(CommandHandler('clearall', clear_notifications, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler(['clear', 'clear_notifications'], clear_selected, filters=filters.ChatType.PRIVATE))
@@ -415,6 +463,7 @@ def build_application(settings, store, signer, *, request=None):
     app.add_handler(CallbackQueryHandler(notice_clicked, pattern=r'^access:1:[0-9]+$'))
     app.add_handler(CallbackQueryHandler(notice_clicked, pattern=r'^(notice|notice-preview):1:[0-9a-f]{32}$'))
     app.add_handler(ChatMemberHandler(membership_changed, ChatMemberHandler.CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(bot_contact_changed, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_error_handler(error_handler)
     return app
 
@@ -444,7 +493,7 @@ def main():
         with args.out.open('x') as handle: json.dump(data, handle, indent=2)
         print('Exported public app configuration. This file contains no bot token or private key.'); return
     logging.basicConfig(level=logging.CRITICAL)
-    logging.getLogger('cinespice').setLevel(logging.WARNING)
+    logging.getLogger('cinespice').setLevel(logging.INFO)
     store = Store(settings.database)
     app = build_application(settings, store, signer)
     try:

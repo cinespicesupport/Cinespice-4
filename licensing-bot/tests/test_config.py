@@ -167,7 +167,7 @@ class ConfigurationTests(unittest.TestCase):
         key = Path('state/signing-key.pem')
         generate_key(key)
         original_key = key.read_bytes()
-        names = {*self.env, 'REQUIRED_CHANNELS', 'SIGNING_KEY', 'DATABASE', 'ACCESS_TTL_SECONDS'}
+        names = {*self.env, 'REQUIRED_CHANNELS', 'ANNOUNCEMENT_CHANNEL_ID', 'SIGNING_KEY', 'DATABASE', 'ACCESS_TTL_SECONDS'}
         env = {key: value for key, value in os.environ.items() if key not in names}
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
         result = subprocess.run([sys.executable, '-m', 'cinespice_bot', 'export-config', '--out', 'public.json'],
@@ -181,7 +181,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_cli_reports_missing_signing_key_without_creating_state_or_leaking_values(self):
         self.write_env('SIGNING_KEY=private-synthetic-path/missing.pem\n')
-        names = {*self.env, 'REQUIRED_CHANNELS', 'SIGNING_KEY', 'DATABASE', 'ACCESS_TTL_SECONDS'}
+        names = {*self.env, 'REQUIRED_CHANNELS', 'ANNOUNCEMENT_CHANNEL_ID', 'SIGNING_KEY', 'DATABASE', 'ACCESS_TTL_SECONDS'}
         env = {key: value for key, value in os.environ.items() if key not in names}
         env['PYTHONPATH'] = str(Path(__file__).resolve().parents[1])
         for command in (['run'], ['export-config', '--out', 'public.json']):

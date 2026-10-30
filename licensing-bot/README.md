@@ -121,7 +121,7 @@ Use this when the bot is already running but your installed IPA was built with o
 4. In **Actions secrets**, retain `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`. These are your Telegram application credentials, separate from the bot token. The IPA workflow reads them when generating its bundled Telegram credentials.
 5. Open **Actions → Build Cinespice IPA → Run workflow**. Select the branch containing the committed fixes and start the workflow. A push containing only bot changes does not automatically trigger the IPA workflow. The separate **Test access bot** workflow tests the Python bot; it does not produce an IPA.
 6. On success, download **Cinespice-unsigned-ipa**, unzip it, and sign/install `Cinespice-unsigned.ipa` using your existing installation method. If it fails, inspect the failed step and **Cinespice-build-diagnostics** when available. A macOS runner allocation failure occurs before compilation and may require a later retry.
-7. Keep one bot instance running. In the new app, sign in, tap **Activate**, and join any missing requirements shown for that same account. Verify a paid member can enter and an unpaid account remains locked.
+7. Keep one bot instance running. In the new app, sign in and tap **Activate**. Verify a paid member can enter without joining optional update channels and an unpaid account remains locked.
 
 For local macOS builds, copy the newly exported JSON to root `access-config.local.json`, then run `python3 scripts/configure-access.py` before XcodeGen. Windows can host the bot and trigger the GitHub workflow; compiling an IPA locally requires macOS and Xcode.
 
@@ -175,6 +175,7 @@ Raw signed replies are sent silently, then edited only after the app validates a
 | `/check` | Anyone, private chat | Show current eligibility; the app supplies a verification challenge |
 | `/id` | Configured admins privately or in groups | Show numeric user/chat IDs |
 | `/help` | Anyone privately | Ask users to post issues in the chat group, with support/contact/update buttons |
+| `/botblocks` | Configured admins privately | Show the 20 most recent recorded bot block/unblock events and user IDs |
 | `/revoke <user ID>` | Configured admins privately | Revoke all installations for that numeric account, even if still a member |
 | `/restore <user ID>` | Configured admins privately | Remove manual revocation; all membership requirements still apply |
 | `/stats` | Configured admins privately | Started-account and broadcast-delivery counts |
@@ -217,6 +218,8 @@ Photos fit within the message viewport without cropping or using their original 
 - **Invalid/ignored receipt:** verify bot username/ID/public key match the installed app. Correct the device clock. Lost/replaced signing keys require new public config and app builds.
 - **Two-step password not requested:** an existing account session can restore authentication without re-entering the password. The separate access gate still runs; this bot does not change account authentication or store cloud passwords.
 - **Bot stopped:** saved persistent activations keep working. New activations cannot complete, and membership or device changes cannot be enforced until communication returns. Restore the bot using the same state and signing key.
+
+The bot prints an initialization message and reports worker failures and retries in its terminal. Private-chat block and unblock events are stored in the bot database and can be viewed with `/botblocks`; recording an event does not by itself change access. Events can only be recorded while Telegram delivers them to the bot.
 
 ## Development checks
 
