@@ -358,7 +358,7 @@ internal val destinations = listOf(Destination("home", "Home", Icons.Default.Hom
                 else -> model.download(video)
             }
         },
-        enabled = state !in listOf("Preparing", "Pausing") && (state == "Downloaded" || !model.busy),
+        enabled = state !in listOf("Preparing", "Pausing") && !model.busy,
         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "$label ${video.displayTitle}" },
         shape = RoundedCornerShape(12.dp),
         colors = ButtonDefaults.buttonColors(containerColor = Color(Ui.action(activity)), contentColor = Color(Ui.onAction(activity))),

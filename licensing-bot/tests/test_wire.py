@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from telegram import Update
 from telegram.request import BaseRequest
 from cinespice_bot.__main__ import build_application
@@ -32,7 +33,7 @@ class SyntheticAPI(BaseRequest):
             status = 'creator' if uid == 123456 else getattr(self, 'member_status', {}).get(uid, 'left' if uid == 8 else 'member')
             if uid == 123456 and args.get('chat_id') == getattr(self, 'non_admin_chat', None):
                 status = 'member'
-            value={'is_anonymous':False,'status':status,'user':{'id':uid,'is_bot':uid==123456,'first_name':'Synthetic'}}
+            value={'is_anonymous':False,'status':status,'user':{'id':uid,'is_bot':uid==123456,'first_name':'Synthetic'}, **({'until_date': 0} if status == 'kicked' else {})}
         elif name=='copyMessage':
             if int(args['chat_id'])==7:
                 if self.retry:
@@ -230,11 +231,14 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_paid_group_departure_ban_and_return_emit_durable_events(self):
         self.store.start(7)
+        self.api.member_status = {7: 'kicked'}
         user={'id':7,'is_bot':False,'first_name':'Buyer'}
-        for old,new in [('member','left'),('left','member'),('member','kicked')]:
-            update={'update_id':4,'chat_member':{'chat':{'id':-1001,'type':'supergroup','title':'Paid'},'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,
-                'old_chat_member':{'user':user,'status':old,'until_date':0},'new_chat_member':{'user':user,'status':new,'until_date':0}}}
-            await self.app.process_update(Update.de_json(update,self.app.bot))
+        # Defer scheduled reconciliation until the simulated event sequence has finished.
+        with patch.object(self.store, 'next_membership_check', return_value=None):
+            for old,new in [('member','left'),('left','member'),('member','kicked')]:
+                update={'update_id':4,'chat_member':{'chat':{'id':-1001,'type':'supergroup','title':'Paid'},'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,
+                    'old_chat_member':{'user':user,'status':old,'until_date':0},'new_chat_member':{'user':user,'status':new,'until_date':0}}}
+                await self.app.process_update(Update.de_json(update,self.app.bot))
         self.assertEqual(self.store.access_state(7),(False,3))
         self.assertEqual(self.store.next_access_event(),(7,3))
         # Worker eventually sends an authenticated bot-chat invalidation, not an access grant.
@@ -242,6 +246,53 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
             if any(name=='sendMessage' and 'access:1:3' in str(a.get('reply_markup')) for name,a in self.api.calls): break
             await asyncio.sleep(.02)
         self.assertTrue(any(name=='sendMessage' and 'access:1:3' in str(a.get('reply_markup')) for name,a in self.api.calls))
+
+    async def test_bot_block_events_are_durable_private_and_do_not_revoke(self):
+        self.store.start(7)
+        bot = {'id': 123456, 'is_bot': True, 'first_name': 'Access', 'username': 'synthetic_bot'}
+        user = {'id': 7, 'is_bot': False, 'first_name': 'Buyer'}
+        for update_id, old, new in [(49, 'left', 'member'), (50, 'member', 'kicked'), (51, 'kicked', 'member')]:
+            data = {'update_id': update_id, 'my_chat_member': {
+                'chat': {'id': 7, 'type': 'private', 'first_name': 'Buyer'}, 'from': user, 'date': 1800000000,
+                'old_chat_member': {'user': bot, 'status': old, 'until_date': 0},
+                'new_chat_member': {'user': bot, 'status': new, 'until_date': 0}}}
+            await self.app.process_update(Update.de_json(data, self.app.bot))
+            await self.app.process_update(Update.de_json(data, self.app.bot))
+        self.assertEqual([(uid, blocked) for uid, blocked, _ in self.store.recent_bot_contact_events()], [(7, 0), (7, 1)])
+        reopened = Store(self.settings.database)
+        try:
+            self.assertEqual([(uid, blocked) for uid, blocked, _ in reopened.recent_bot_contact_events()], [(7, 0), (7, 1)])
+        finally:
+            reopened.close()
+        self.assertEqual(self.store.access_state(7), (False, 0))
+        before = len(self.api.calls)
+        await self.message(7, '/botblocks')
+        self.assertEqual(len(self.api.calls), before)
+        await self.message(42, '/botblocks')
+        reply = [args for name, args in self.api.calls if name == 'sendMessage' and args['chat_id'] == 42][-1]
+        self.assertIn('7: blocked', reply['text'])
+        self.assertIn('7: unblocked', reply['text'])
+
+    async def test_membership_worker_recovers_from_unexpected_error(self):
+        self.store.start(7)
+        self.store.observe_paid_membership(7, True)
+        self.api.member_status = {7: 'left'}
+        original = self.store.next_membership_check
+        attempts = 0
+        def fail_once():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError('synthetic private detail')
+            return original()
+        with patch.object(self.store, 'next_membership_check', side_effect=fail_once):
+            with self.assertLogs('cinespice', level='ERROR') as logs:
+                for _ in range(350):
+                    if self.store.access_state(7)[1] == 1: break
+                    await asyncio.sleep(.02)
+            self.assertEqual(self.store.access_state(7), (False, 1))
+            self.assertTrue(any('Membership worker failed (RuntimeError)' in line for line in logs.output))
+            self.assertNotIn('synthetic private detail', ' '.join(logs.output))
 
     async def test_ack_after_revoke_does_not_claim_verified(self):
         nonce = 'e'*32

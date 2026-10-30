@@ -24,6 +24,10 @@ class MainActivity : ComponentActivity() {
         val session = exportGeneration; exportGeneration = -1L
         val uri = result.data?.data
         if (result.resultCode == RESULT_OK && uri != null && video != null) {
+            if (model.busy) {
+                model.message("Could not save while another operation is running. Please try again.")
+                return@registerForActivityResult
+            }
             model.work("Saving video…") {
                 model.telegram.check(session)
                 val path = model.telegram.completedPath(video)

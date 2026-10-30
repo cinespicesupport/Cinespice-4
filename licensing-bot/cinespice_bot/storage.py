@@ -19,6 +19,8 @@ class Store:
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS paid_membership_checks (
             user_id INTEGER PRIMARY KEY, member INTEGER, next_check INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS bot_contact_events (
+            update_id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, blocked INTEGER NOT NULL, observed_at INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS active_devices (user_id INTEGER PRIMARY KEY, device TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS access_state (user_id INTEGER PRIMARY KEY, revoked INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS access_events (user_id INTEGER PRIMARY KEY, revision INTEGER NOT NULL, next_try INTEGER NOT NULL DEFAULT 0);
@@ -37,6 +39,16 @@ class Store:
             self.db.execute('INSERT OR IGNORE INTO paid_membership_checks VALUES (?,NULL,?)', (uid, int(time.time())+900))
             self.db.execute('UPDATE notice_clears SET next_try=0 WHERE user_id=?', (uid,))
             self.db.execute('UPDATE notice_deletes SET next_try=0 WHERE user_id=?', (uid,))
+
+    def record_bot_contact_event(self, update_id: int, uid: int, blocked: bool, observed_at: int) -> bool:
+        with self.db:
+            cursor = self.db.execute('INSERT OR IGNORE INTO bot_contact_events VALUES (?,?,?,?)',
+                                     (update_id, uid, int(blocked), observed_at))
+            return cursor.rowcount == 1
+
+    def recent_bot_contact_events(self, limit=20):
+        return self.db.execute('SELECT user_id,blocked,observed_at FROM bot_contact_events ORDER BY rowid DESC LIMIT ?',
+                               (limit,)).fetchall()
 
     def started(self, uid: int) -> bool:
         return self.db.execute('SELECT 1 FROM users WHERE id=?', (uid,)).fetchone() is not None
