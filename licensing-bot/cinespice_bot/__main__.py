@@ -9,7 +9,7 @@ from pathlib import Path
 from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeChat, BotCommandScopeDefault, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatType, ChatMemberStatus
 from telegram.error import BadRequest, Forbidden, RetryAfter, TelegramError
-from telegram.ext import Application, CallbackQueryHandler, ChatMemberHandler, CommandHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, ChatMemberHandler, CommandHandler, MessageHandler, filters
 from .config import ConfigurationError, Settings
 from .protocol import NONCE, Signer, generate_key
 from .service import AccessService, is_member
@@ -22,6 +22,7 @@ MESSAGES = {
     'join_required': 'Please join the required community channels shown in Cinespice, then check access again.',
     'revoked': 'Your access was revoked by an administrator. Contact us for help.',
     'unavailable': 'Verification is temporarily unavailable. Please try again shortly.',
+    'other_device': 'This account was activated on another device. Activate on this device to move access here.',
 }
 
 
@@ -31,6 +32,7 @@ def build_application(settings, store, signer, *, request=None):
     welcome_cooldown = {}
     stop = asyncio.Event()
     worker = None
+    membership_worker = None
 
     def links():
         rows = [[InlineKeyboardButton('Contact us for access', url=settings.contact_url)]]
@@ -78,12 +80,20 @@ def build_application(settings, store, signer, *, request=None):
             return
         if len(cooldown) > 10000: cooldown.clear()
         cooldown[uid] = now
+        observed_revision = store.access_state(uid)[1]
         status, paid, missing = await service.requirements(context.bot, uid)
+        # A membership change or manual revocation during the network calls may
+        # make the answer stale; never sign that answer at the newer revision.
+        if store.access_state(uid)[1] != observed_revision:
+            status, paid, missing = 'unavailable', False, []
+        if device and status == 'authorized' and not store.authorize_device(uid, device, transfer=(command == '/start')):
+            status = 'other_device'
         if not device:
             await update.effective_message.reply_text('Verified ✅' if status == 'authorized' else MESSAGES[status], reply_markup=None if status == 'authorized' else links())
         if nonce:
             token = signer.receipt(uid, nonce, status, settings.ttl if status == 'authorized' else 60,
-                                   device=device, revision=store.access_state(uid)[1], paid=paid, missing=missing)
+                                   device=device, revision=store.access_state(uid)[1], paid=paid, missing=missing,
+                                   persistent=bool(device and status == 'authorized'))
             reply = await update.effective_message.reply_text(token, disable_notification=True)
             if device: store.remember_receipt(uid, nonce, reply.message_id, update.effective_message.message_id, status)
 
@@ -114,14 +124,16 @@ def build_application(settings, store, signer, *, request=None):
         uid = int(context.args[0])
         revoked = update.effective_message.text.split()[0].split('@')[0] == '/revoke'
         store.access_changed(uid, revoked=revoked)
-        await update.effective_message.reply_text('Access revoked. Devices will lock when they receive the update; offline passes expire.' if revoked else 'Manual revocation removed. Paid-group and channel membership are still required.')
+        await update.effective_message.reply_text('Access revoked. Devices will lock once they verify the update.' if revoked else 'Manual revocation removed. Paid-group membership is still required.')
 
     async def membership_changed(update, context):
         event = update.chat_member
-        required = {settings.paid_group, *(c['id'] for c in settings.channels)}
+        required = {settings.paid_group}
         if not event or event.chat.id not in required or event.new_chat_member.user.is_bot: return
         if is_member(event.old_chat_member) != is_member(event.new_chat_member):
             store.access_changed(event.new_chat_member.user.id)
+            if event.chat.id == settings.paid_group:
+                store.observe_paid_membership(event.new_chat_member.user.id, is_member(event.new_chat_member))
         await welcome(update, context)
 
     async def help_command(update, context):
@@ -290,11 +302,44 @@ def build_application(settings, store, signer, *, request=None):
                 if attempts >= 8: store.delivered(campaign, uid, 'failed')
                 else: store.retry(campaign, uid, min(3600, 2 ** (attempts + 2)))
 
+    async def reconcile_memberships(app):
+        while not stop.is_set():
+            row = store.next_membership_check()
+            if row:
+                uid, previous, revision = row
+                try:
+                    member = is_member(await app.bot.get_chat_member(settings.paid_group, uid))
+                    store.complete_membership_check(uid, previous, revision, member)
+                    delay = 0.2
+                except RetryAfter as exc:
+                    seconds = exc.retry_after.total_seconds() if hasattr(exc.retry_after, 'total_seconds') else exc.retry_after
+                    store.retry_membership_check(uid, int(seconds) + 1)
+                    delay = min(float(seconds) + 1, 30)
+                except TelegramError:
+                    # An unreachable API is not evidence that the user left.
+                    store.retry_membership_check(uid, 30)
+                    delay = 1
+            else:
+                delay = 1
+            try: await asyncio.wait_for(stop.wait(), timeout=delay)
+            except asyncio.TimeoutError: pass
+
+    async def channel_announcement(update, context):
+        message = update.channel_post
+        if not message or not settings.announcement_channel or message.chat.id != settings.announcement_channel:
+            return
+        if not (message.text or message.photo or message.animation):
+            return
+        # Stable identity prevents duplicate Telegram updates from re-queueing a post.
+        campaign = uuid.uuid5(uuid.NAMESPACE_URL, f'cinespice-channel:{message.chat.id}:{message.message_id}').hex
+        if not store.campaign_exists(campaign):
+            store.queue(campaign, message.chat.id, message.message_id)
+
     async def notice_clicked(update, context):
         await update.callback_query.answer('Open Cinespice to read this update.')
 
     async def startup(app):
-        nonlocal worker
+        nonlocal worker, membership_worker
         async def checked_request(request, message):
             try:
                 return await request
@@ -309,7 +354,7 @@ def build_application(settings, store, signer, *, request=None):
             'Cannot open PAID_GROUP_ID. Check its exact negative numeric chat ID and add the bot as an administrator in that private group.')
         if paid.type not in {ChatType.GROUP, ChatType.SUPERGROUP} or paid.username or getattr(paid, 'active_usernames', None):
             raise ConfigurationError('PAID_GROUP_ID must identify a private paid-members group')
-        chats = [('PAID_GROUP_ID', settings.paid_group)] + [(f'REQUIRED_CHANNELS entry {index}', c['id']) for index, c in enumerate(settings.channels, 1)]
+        chats = [('PAID_GROUP_ID', settings.paid_group)]
         for field, chat in chats:
             member = await checked_request(app.bot.get_chat_member(chat, me.id),
                 f'Cannot check bot membership for {field}. Check the numeric chat ID and add the bot as an administrator there.')
@@ -330,13 +375,19 @@ def build_application(settings, store, signer, *, request=None):
             # Telegram cannot open a private chat until its owner starts the bot.
             try: await app.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(uid))
             except BadRequest: pass
+        store.schedule_membership_reconciliation()
         worker = asyncio.create_task(deliver(app))
+        membership_worker = asyncio.create_task(reconcile_memberships(app))
 
     async def shutdown(app):
         stop.set()
         if worker:
             worker.cancel()
             try: await worker
+            except asyncio.CancelledError: pass
+        if membership_worker:
+            membership_worker.cancel()
+            try: await membership_worker
             except asyncio.CancelledError: pass
         store.close()
 
@@ -347,6 +398,7 @@ def build_application(settings, store, signer, *, request=None):
     builder = Application.builder().token(settings.token).concurrent_updates(False).post_init(startup).post_stop(shutdown)
     if request is not None: builder = builder.request(request)
     app = builder.build()
+    app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, channel_announcement))
     app.add_handler(CommandHandler(['start', 'check'], access, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler('verified', verified, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler(['revoke', 'restore'], revoke, filters=filters.ChatType.PRIVATE))
@@ -396,7 +448,7 @@ def main():
     store = Store(settings.database)
     app = build_application(settings, store, signer)
     try:
-        app.run_polling(allowed_updates=['message', 'callback_query', 'chat_member', 'my_chat_member'], drop_pending_updates=False)
+        app.run_polling(allowed_updates=['message', 'channel_post', 'callback_query', 'chat_member', 'my_chat_member'], drop_pending_updates=False)
     finally:
         # Also covers failed startup before post_stop can run.
         store.close()

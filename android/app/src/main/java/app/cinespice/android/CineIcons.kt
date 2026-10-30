@@ -10,6 +10,7 @@ import androidx.compose.ui.unit.dp
 internal object CineIcons {
     private fun icon(name: String, data: String) = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).addPath(PathParser().parsePathString(data).toNodes(), fill = SolidColor(Color.Black)).build()
     val Download = icon("Download", "M19,9H15V3H9V9H5L12,16ZM5,18V20H19V18Z")
+    val Pause = icon("Pause", "M6,4H10V20H6ZM14,4H18V20H14Z")
     val History = icon("History", "M13,3C8,3 4,7 4,12H1L5,16L9,12H6C6,8.1 9.1,5 13,5S20,8.1 20,12S16.9,19 13,19C10.9,19 9,18.1 7.7,16.7L6.3,18.1C8,19.9 10.3,21 13,21C18,21 22,17 22,12S18,3 13,3ZM12,7V13L17,16L18,14.4L14,12V7Z")
     val VideoLibrary = icon("VideoLibrary", "M4,6H2V20C2,21.1 2.9,22 4,22H18V20H4ZM20,2H8C6.9,2 6,2.9 6,4V16C6,17.1 6.9,18 8,18H20C21.1,18 22,17.1 22,16V4C22,2.9 21.1,2 20,2ZM12,6L18,10L12,14Z")
     val PersonOutline = icon("Profile", "M12,4C9.8,4 8,5.8 8,8S9.8,12 12,12S16,10.2 16,8S14.2,4 12,4ZM12,6C13.1,6 14,6.9 14,8S13.1,10 12,10S10,9.1 10,8S10.9,6 12,6ZM12,14C9.3,14 4,15.3 4,18V20H20V18C20,15.3 14.7,14 12,14ZM6,18C6,17.3 9.1,16 12,16S18,17.3 18,18Z")

@@ -33,9 +33,9 @@ struct AccessConfiguration: Decodable {
         let value = ([botUserID, botUsername.lowercased(), publicKey, contactURL] + channels.map { $0.url }).joined(separator: "\n")
         return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    func receipt(_ text: String, account: Int64, nonce: String, device: String? = nil) throws -> AccessReceipt {
+    func receipt(_ text: String, account: Int64, nonce: String, device: String? = nil, allowStored: Bool = false) throws -> AccessReceipt {
         let key = try P256.Signing.PublicKey(derRepresentation: Data(base64Encoded: publicKey) ?? Data())
-        return try AccessReceipt.decode(text, account: String(account), nonce: nonce, now: Int64(Date().timeIntervalSince1970), device: device) { data, signature in
+        return try AccessReceipt.decode(text, account: String(account), nonce: nonce, now: Int64(Date().timeIntervalSince1970), device: device, allowStored: allowStored) { data, signature in
             guard let signature = try? P256.Signing.ECDSASignature(derRepresentation: signature) else { return false }
             return key.isValidSignature(signature, for: data)
         }

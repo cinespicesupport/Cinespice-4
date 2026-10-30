@@ -33,6 +33,7 @@ struct TelegramLibraryView: View {
     private var layout: CinespiceLayout { CinespiceLayout(width: min(viewport.width, CinespiceLayout.maximumWidth)) }
     @State private var detailsVideo: TelegramVideo?
     @State private var playAfterDetails: TelegramVideo?
+    @State private var exportAfterDetails: TelegramVideo?
     @State private var query = ""
     @State private var collectionQuery = ""
     @State private var scrolledDestinations: Set<Int> = []
@@ -103,8 +104,11 @@ struct TelegramLibraryView: View {
             }) { file in VideoExportPicker(file: file) { exportFile = nil } }
             .sheet(item: $detailsVideo, onDismiss: {
                 if let video = playAfterDetails { playAfterDetails = nil; play(video) }
+                else if let video = exportAfterDetails { exportAfterDetails = nil; exportVideo(video) }
             }) { video in
-                VideoDetailsView(play: { playAfterDetails = video; detailsVideo = nil }, video: video)
+                VideoDetailsView(play: { playAfterDetails = video; detailsVideo = nil },
+                                 download: { rangeServer.stop(); telegram.download(video) },
+                                 export: { exportAfterDetails = video; detailsVideo = nil }, video: video)
             }
             .sheet(isPresented: $showSettings) { LibrarySettingsView() }
             .fullScreenCover(item: $selection) { item in
@@ -120,7 +124,7 @@ struct TelegramLibraryView: View {
                 if stage != .ready {
                     cancelOpening()
                     showCollections = false; showSettings = false; showNotifications = false; expandedAnnouncement = nil
-                    playAfterDetails = nil; lastSearchVideo = nil; collectionQuery = ""; focusSearchRequested = false; scrolledDestinations = []; tab = 0; savedList = "New Releases"; selection = nil; exportFile = nil; collection = nil; detailsVideo = nil; query = ""; rangeServer.stop()
+                    playAfterDetails = nil; exportAfterDetails = nil; lastSearchVideo = nil; collectionQuery = ""; focusSearchRequested = false; scrolledDestinations = []; tab = 0; savedList = "New Releases"; selection = nil; exportFile = nil; collection = nil; detailsVideo = nil; query = ""; rangeServer.stop()
                 }
             }
         }
@@ -419,7 +423,7 @@ struct TelegramLibraryView: View {
             pageTitle("Downloads", subtitle: "")
             if items.isEmpty {
                 LibraryEmptyState(symbol: "arrow.down.circle", title: "Watch anywhere",
-                                  detail: "Touch and hold a video, then choose Download. Your downloads will appear here.")
+                                  detail: "Open a video’s details or touch and hold it, then choose Download. Your downloads will appear here.")
             } else {
                 resultSummary("\(items.count) titles")
                 releaseSortHint

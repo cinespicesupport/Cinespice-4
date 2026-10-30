@@ -230,16 +230,10 @@ struct VideoCard: View {
                     ProgressView("Pausing download…").font(.caption2)
                 } else if telegram.fullDownloads.contains(video.fileID) {
                     Text("Downloading · \(ByteCountFormatter.string(fromByteCount: library.display(video).downloadedBytes, countStyle: .file))").font(.caption2).foregroundStyle(theme.accent)
-                    Button("Pause download") { Task { await telegram.pauseDownload(video) } }.font(.caption.bold())
                 } else if let record = telegram.downloadRecords[video.id], record.state != .downloaded {
                     Text(record.error.isEmpty ? record.state.rawValue : record.error).font(.caption2).foregroundStyle(theme.muted)
-                    if record.state == .retry || record.state == .cancelled || record.state == .paused {
-                        Button(record.state == .retry ? "Retry download" : "Resume download", action: download).font(.caption.bold())
-                    }
                 }
-                if library.display(video).isDownloaded {
-                    Button(action: export) { Label("Save to device", systemImage: "square.and.arrow.up") }.font(.caption.bold())
-                }
+                VideoDownloadActions(video: video, download: download, export: export)
                 HStack(spacing: 6) {
                     if library.snapshot.savedLists["Favorites"]?.contains(video.id) == true { Image(systemName: "heart.fill").accessibilityLabel("Favorite") }
                     if library.snapshot.savedLists["Watchlist"]?.contains(video.id) == true { Image(systemName: "bookmark.fill").accessibilityLabel("In Watchlist") }
@@ -301,6 +295,69 @@ struct VideoCard: View {
     private func duration(_ seconds: Int) -> String { seconds >= 3600 ? "\(seconds / 3600)h \(seconds / 60 % 60)m" : "\(seconds / 60)m" }
 }
 
+/// Visible actions share the same transfer state and callbacks in cards and details.
+struct VideoDownloadActions: View {
+    @EnvironmentObject private var telegram: TelegramClient
+    @EnvironmentObject private var library: LibraryStore
+    let video: TelegramVideo
+    var showInitial = false
+    let download: () -> Void
+    let export: () -> Void
+
+    var body: some View {
+        let preparing = telegram.preparingDownloads.contains(video.id)
+        let pausing = telegram.cancellingDownloads.contains(video.fileID)
+        let downloading = telegram.fullDownloads.contains(video.fileID)
+        let downloaded = library.display(video).isDownloaded
+        let record = telegram.downloadRecords[video.id]
+        VStack(spacing: 8) {
+            if !preparing && !pausing {
+                if downloading {
+                    downloadButton("Pause download", symbol: "pause.fill") { Task { await telegram.pauseDownload(video) } }
+                } else if let record = record, record.state == .retry || record.state == .cancelled || record.state == .paused {
+                    downloadButton(record.state == .retry ? "Retry download" : "Resume download",
+                                   symbol: record.state == .retry ? "arrow.clockwise" : "play.fill", action: download)
+                } else if showInitial && !downloaded && (record == nil || record?.state == .downloaded) {
+                    downloadButton(record == nil ? "Download" : "Retry download", symbol: "arrow.down", action: download)
+                }
+            } else if showInitial {
+                downloadButton(preparing ? "Preparing…" : "Pausing…", symbol: preparing ? "arrow.down" : "pause.fill", action: {})
+                    .disabled(true)
+            }
+            if downloaded {
+                downloadButton("Save to device", symbol: "square.and.arrow.up", action: export)
+            }
+        }
+    }
+
+    private func downloadButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        DownloadActionButton(title: title, symbol: symbol, videoTitle: video.displayTitle, action: action)
+    }
+}
+
+struct DownloadActionButton: View {
+    @AppStorage("cinespice.theme") private var theme: CinespiceTheme = .dark
+    let title: String
+    let symbol: String
+    let videoTitle: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.callout.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 8).padding(.vertical, 10)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .foregroundStyle(theme.onAction)
+                .background(theme.action, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(CinespicePressStyle())
+        .accessibilityLabel("\(title) \(videoTitle)")
+    }
+}
+
 struct LibraryEmptyState: View {
     @AppStorage("cinespice.theme") private var theme: CinespiceTheme = .dark
     let symbol: String
@@ -320,6 +377,8 @@ struct VideoDetailsView: View {
     @EnvironmentObject private var library: LibraryStore
     @State private var saving = false
     let play: () -> Void
+    let download: () -> Void
+    let export: () -> Void
     @AppStorage("cinespice.theme") private var theme: CinespiceTheme = .dark
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -338,6 +397,7 @@ struct VideoDetailsView: View {
                         savedButton("Watchlist", symbol: "plus", selectedSymbol: "checkmark")
                         Spacer(minLength: 0)
                     }.buttonStyle(.plain)
+                    VideoDownloadActions(video: video, showInitial: true, download: download, export: export)
                     VStack(alignment: .leading, spacing: 12) {
                         Text("About this video").font(.headline)
                         Text(video.fileName ?? video.title).font(.body).textSelection(.enabled)

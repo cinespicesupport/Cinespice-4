@@ -29,7 +29,7 @@ class SyntheticAPI(BaseRequest):
         elif name=='getChatMember':
             uid=int(args['user_id'])
             if uid != 123456 and getattr(self,'on_member_lookup',None): self.on_member_lookup()
-            status = 'creator' if uid == 123456 else 'left' if uid == 8 else 'member'
+            status = 'creator' if uid == 123456 else getattr(self, 'member_status', {}).get(uid, 'left' if uid == 8 else 'member')
             if uid == 123456 and args.get('chat_id') == getattr(self, 'non_admin_chat', None):
                 status = 'member'
             value={'is_anonymous':False,'status':status,'user':{'id':uid,'is_bot':uid==123456,'first_name':'Synthetic'}}
@@ -87,6 +87,43 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         # Reusing the confirmation cannot enqueue a second campaign.
         await self.app.process_update(Update.de_json(query,self.app.bot))
         self.assertEqual(self.store.stats()[0],2)
+    async def test_restart_reconciliation_sends_invalidation_for_missed_leave(self):
+        self.store.start(7)
+        self.store.observe_paid_membership(7, True)
+        self.api.member_status = {7: 'left'}
+        # Simulate a reconnect after the leave update was missed.
+        self.store.schedule_membership_reconciliation()
+        for _ in range(150):
+            events = [a for name, a in self.api.calls if name == 'sendMessage' and int(a['chat_id']) == 7
+                      and 'access:1:' in str(a.get('reply_markup', ''))]
+            if events: break
+            await asyncio.sleep(.02)
+        self.assertTrue(events, 'membership change was not delivered')
+        self.assertEqual(self.store.access_state(7), (False, 1))
+        self.assertTrue(any(name == 'getChatMember' and int(a['chat_id']) == -1001 and int(a['user_id']) == 7
+                            for name, a in self.api.calls))
+
+    async def test_reconciliation_retries_failed_lookup_without_locking_account(self):
+        self.store.start(7)
+        self.store.observe_paid_membership(7, True)
+        self.api.failure = ('getChatMember', -1001)
+        self.store.schedule_membership_reconciliation()
+        for _ in range(150):
+            attempts = [a for name, a in self.api.calls if name == 'getChatMember'
+                        and int(a['chat_id']) == -1001 and int(a['user_id']) == 7]
+            if attempts and self.store.next_membership_check() is None: break
+            await asyncio.sleep(.02)
+        self.assertTrue(attempts)
+        self.assertEqual(self.store.access_state(7), (False, 0))
+        self.assertIsNone(self.store.next_access_event())
+        self.api.failure = None
+        self.api.member_status = {7: 'left'}
+        self.store.schedule_membership_reconciliation()
+        for _ in range(150):
+            if self.store.access_state(7)[1] == 1: break
+            await asyncio.sleep(.02)
+        self.assertEqual(self.store.access_state(7), (False, 1))
+
     async def test_new_paid_member_gets_group_welcome_with_start_button(self):
         user={'id':7,'is_bot':False,'first_name':'Buyer'}
         update={'update_id':3,'chat_member':{'chat':{'id':-1001,'type':'supergroup','title':'Paid'},'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,'old_chat_member':{'user':user,'status':'left'},'new_chat_member':{'user':user,'status':'member'}}}
@@ -105,7 +142,6 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
             self.api.failure_code = code
             for name, chat, field in [('getMe', None, 'BOT_TOKEN'), ('getChat', -1001, 'PAID_GROUP_ID'),
                                       ('getChatMember', -1001, 'PAID_GROUP_ID'),
-                                      ('getChatMember', -1002, 'REQUIRED_CHANNELS entry 1'),
                                       ('deleteWebhook', None, 'deleteWebhook')]:
                 with self.subTest(code=code, operation=name, field=field):
                     self.api.failure = (name, chat)
@@ -119,7 +155,7 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(any(operation == 'deleteWebhook' for operation, _ in self.api.calls))
 
     async def test_non_admin_chat_is_named_and_startup_stops(self):
-        for chat, field in [(-1001, 'PAID_GROUP_ID'), (-1002, 'REQUIRED_CHANNELS entry 1')]:
+        for chat, field in [(-1001, 'PAID_GROUP_ID')]:
             with self.subTest(field=field):
                 self.api.non_admin_chat = chat
                 self.api.calls.clear()
@@ -169,11 +205,34 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         await self.message(42, '/restore 8')
         self.assertEqual(self.store.access_state(8), (False,2))
 
-    async def test_channel_departure_ban_and_return_emit_durable_events(self):
+    async def test_configured_channel_post_queues_one_announcement(self):
+        object.__setattr__(self.settings, 'announcement_channel', -1002)
+        self.store.start(7)
+        def post(chat, message):
+            return {'update_id':10,'channel_post':{'message_id':message,'date':1800000000,
+                'chat':{'id':chat,'type':'channel','title':'Updates'},'text':'Major update'}}
+        await self.app.process_update(Update.de_json(post(-9999, 50), self.app.bot))
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM campaigns').fetchone()[0], 0)
+        await self.app.process_update(Update.de_json(post(-1002, 50), self.app.bot))
+        await self.app.process_update(Update.de_json(post(-1002, 50), self.app.bot))
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM campaigns').fetchone()[0], 1)
+        self.assertEqual(self.store.db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 1)
+
+    async def test_optional_channel_departure_does_not_invalidate_access(self):
+        self.store.start(7)
+        user={'id':7,'is_bot':False,'first_name':'Buyer'}
+        update={'update_id':4,'chat_member':{'chat':{'id':-1002,'type':'channel','title':'Updates'},
+            'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,
+            'old_chat_member':{'user':user,'status':'member'},'new_chat_member':{'user':user,'status':'left'}}}
+        await self.app.process_update(Update.de_json(update,self.app.bot))
+        self.assertEqual(self.store.access_state(7), (False,0))
+        self.assertIsNone(self.store.next_access_event())
+
+    async def test_paid_group_departure_ban_and_return_emit_durable_events(self):
         self.store.start(7)
         user={'id':7,'is_bot':False,'first_name':'Buyer'}
         for old,new in [('member','left'),('left','member'),('member','kicked')]:
-            update={'update_id':4,'chat_member':{'chat':{'id':-1002,'type':'channel','title':'Required'},'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,
+            update={'update_id':4,'chat_member':{'chat':{'id':-1001,'type':'supergroup','title':'Paid'},'from':{'id':42,'is_bot':False,'first_name':'Owner'},'date':1800000000,
                 'old_chat_member':{'user':user,'status':old,'until_date':0},'new_chat_member':{'user':user,'status':new,'until_date':0}}}
             await self.app.process_update(Update.de_json(update,self.app.bot))
         self.assertEqual(self.store.access_state(7),(False,3))

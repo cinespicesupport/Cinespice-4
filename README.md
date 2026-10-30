@@ -44,13 +44,14 @@ remain separate from the app's cache.
 ## Member access
 
 Sign in with your Telegram account, then tap **Activate**. The CineSpice bot checks
-your access and guides you to any required channel or group you still need to join.
+that your account belongs to the paid group. If it does not, contact support.
+Joining the updates channel is optional.
 
-Activation is saved for your account and app installation, so you do not need to
-tap Activate on every reopen. Access renews automatically while membership remains
-valid. A new login or installation requires activation. Leaving a required group
-or channel, being removed, or an administrator revoking access ends eligibility;
-an offline app locks when its current access pass expires.
+Activation is saved for your account and app installation. Closing the app or a
+temporary bot outage does not require another activation. Signing out or reinstalling
+requires activation again. Activating on another installation moves access there;
+the previous installation will be blocked when it can verify the change. Leaving
+the paid group or an administrator revoking access also blocks access once verified.
 
 ## Announcements and updates
 

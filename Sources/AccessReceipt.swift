@@ -12,9 +12,10 @@ struct AccessReceipt: Decodable {
     let revision: Int64?
     let paid: Bool?
     let missing: [Int]?
+    let persistent: Bool?
 
     static func decode(_ token: String, account: String, nonce: String, now: Int64,
-                       device expectedDevice: String? = nil, verify: (Data, Data) -> Bool) throws -> AccessReceipt {
+                       device expectedDevice: String? = nil, allowStored: Bool = false, verify: (Data, Data) -> Bool) throws -> AccessReceipt {
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard token.utf8.count <= 2048, parts.count == 3, parts[0] == "CSP1",
               let payload = decode64(String(parts[1])), let signature = decode64(String(parts[2])),
@@ -22,9 +23,10 @@ struct AccessReceipt: Decodable {
         let receipt = try JSONDecoder().decode(Self.self, from: payload)
         guard receipt.v == 1, receipt.uid == account, receipt.nonce == nonce,
               nonce.count == 32, nonce.allSatisfy({ "0123456789abcdef".contains($0) }),
-              ["authorized", "unpaid", "not_started", "join_required", "unavailable", "revoked"].contains(receipt.status),
-              receipt.iat <= now + 60, receipt.iat >= now - 86400,
-              receipt.exp > receipt.iat, receipt.exp - receipt.iat <= 86400, receipt.exp > now else { throw InvalidReceipt() }
+              ["authorized", "unpaid", "not_started", "join_required", "unavailable", "revoked", "other_device"].contains(receipt.status),
+              receipt.iat <= now + 60, receipt.exp > receipt.iat, receipt.exp - receipt.iat <= 86400 else { throw InvalidReceipt() }
+        let storedGrant = allowStored && expectedDevice != nil && receipt.persistent == true && receipt.status == "authorized"
+        guard storedGrant || (receipt.iat >= now - 86400 && receipt.exp > now) else { throw InvalidReceipt() }
         if let expectedDevice {
             guard expectedDevice.count == 24, expectedDevice.allSatisfy({ "0123456789abcdef".contains($0) }),
                   receipt.device == expectedDevice, let revision = receipt.revision, revision >= 0,

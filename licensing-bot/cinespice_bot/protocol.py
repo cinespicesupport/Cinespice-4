@@ -7,7 +7,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 NONCE = re.compile(r'[0-9a-f]{32}\Z')
-STATUSES = {'authorized', 'unpaid', 'not_started', 'join_required', 'unavailable', 'revoked'}
+STATUSES = {'authorized', 'unpaid', 'not_started', 'join_required', 'unavailable', 'revoked', 'other_device'}
 
 
 def b64(data: bytes) -> str:
@@ -32,7 +32,7 @@ class Signer:
     def public_key(self) -> str:
         return base64.b64encode(self.key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).decode('ascii')
 
-    def receipt(self, uid: int, nonce: str, status: str, ttl: int, now: int | None = None, *, device: str = "", revision: int = 0, paid: bool = False, missing=()) -> str:
+    def receipt(self, uid: int, nonce: str, status: str, ttl: int, now: int | None = None, *, device: str = "", revision: int = 0, paid: bool = False, missing=(), persistent: bool = False) -> str:
         if uid <= 0 or not NONCE.fullmatch(nonce) or status not in STATUSES or not 60 <= ttl <= 86400:
             raise ValueError('Invalid receipt fields')
         now = int(time.time()) if now is None else now
@@ -41,6 +41,9 @@ class Signer:
             if not re.fullmatch(r'[0-9a-f]{24}', device) or revision < 0 or any(type(i) is not int or not 0 <= i < 10 for i in missing):
                 raise ValueError('Invalid installation or membership state')
             data.update(device=device, revision=revision, paid=paid, missing=list(missing))
+            if persistent:
+                if status != 'authorized': raise ValueError('Only an authorized receipt can persist')
+                data['persistent'] = True
         encoded = b64(json.dumps(data, separators=(',', ':'), sort_keys=True).encode())
         message = ('CSP1.' + encoded).encode('ascii')
         signature = self.key.sign(message, ec.ECDSA(hashes.SHA256()))

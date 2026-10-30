@@ -49,6 +49,19 @@ enum SecureStore {
         return data
     }
     static func installationID() throws -> String {
+        // Keychain items can outlive an uninstall. A marker in app preferences
+        // identifies that case, while allowing existing installations to migrate.
+        let markerKey = "access.installation.marker"
+        let localMarker = UserDefaults.standard.string(forKey: markerKey)
+        let secureMarker = try read(markerKey).flatMap { String(data: $0, encoding: .utf8) }
+        if secureMarker != nil && localMarker != secureMarker {
+            try remove("access.installation")
+        }
+        if localMarker == nil || localMarker != secureMarker {
+            let marker = UUID().uuidString
+            try save(Data(marker.utf8), key: markerKey)
+            UserDefaults.standard.set(marker, forKey: markerKey)
+        }
         if let data = try read("access.installation"), let value = String(data: data, encoding: .utf8), value.range(of: #"^[0-9a-f]{24}$"#, options: .regularExpression) != nil { return value }
         var bytes = [UInt8](repeating: 0, count: 12)
         let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)

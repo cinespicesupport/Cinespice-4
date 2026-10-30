@@ -32,6 +32,7 @@ final class TelegramClient: ObservableObject {
     private var accessDevice = ""
     private var accessRevision: Int64 = 0
     private var accessActivated = false
+    private var accessPersistent = false
     private var accessRefresh: Task<Void, Never>?
     private var accessNonce = ""
     private var accessBotChat: Int64 = 0
@@ -725,21 +726,23 @@ final class TelegramClient: ObservableObject {
             accessDevice = try SecureStore.installationID()
             guard let data = try SecureStore.read(key), let snapshot = try? JSONDecoder().decode(AccessSnapshot.self, from: data), snapshot.device == accessDevice else { return }
             accessActivated = true; accessRevision = snapshot.revision
-            if let receipt = try? config.receipt(snapshot.token, account: account, nonce: snapshot.nonce, device: accessDevice),
+            if let receipt = try? config.receipt(snapshot.token, account: account, nonce: snapshot.nonce, device: accessDevice, allowStored: true),
                receipt.status == "authorized", (receipt.revision ?? -1) >= accessRevision {
-                grantAccess(receipt)
+                grantAccess(receipt, refreshSoon: true)
             } else { checkAccess() }
         } catch { accessMessage = "Unlock your device to restore activation from secure storage." }
     }
 
-    private func grantAccess(_ receipt: AccessReceipt) {
+    private func grantAccess(_ receipt: AccessReceipt, refreshSoon: Bool = false) {
+        accessPersistent = receipt.persistent == true
         accessExpiry = receipt.exp
         accessDeadline = ContinuousClock().now.advanced(by: .seconds(max(0, receipt.exp - Int64(Date().timeIntervalSince1970))))
         accessMessage = "Verified. Welcome to Cinespice."; stage = .ready
         accessRefresh?.cancel()
         let session = accountSession
+        let delay: Int64 = refreshSoon ? 2 : (accessPersistent ? 21600 : max(1, receipt.exp - Int64(Date().timeIntervalSince1970) - 30))
         accessRefresh = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: UInt64(max(1, receipt.exp - Int64(Date().timeIntervalSince1970) - 30)) * 1_000_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000) } catch { return }
             guard let self, self.accountSession == session else { return }
             self.checkAccess()
         }
@@ -748,8 +751,8 @@ final class TelegramClient: ObservableObject {
     }
 
     private var hasValidAccess: Bool {
-        stage == .ready && accessExpiry > Int64(Date().timeIntervalSince1970) &&
-            (accessDeadline.map { ContinuousClock().now < $0 } ?? false)
+        stage == .ready && (accessPersistent || (accessExpiry > Int64(Date().timeIntervalSince1970) &&
+            (accessDeadline.map { ContinuousClock().now < $0 } ?? false)))
     }
     private func accessConnectionFailed() {
         if !hasValidAccess {
@@ -763,7 +766,7 @@ final class TelegramClient: ObservableObject {
         let session = accountSession
         accessRefresh?.cancel()
         accessRefresh = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 10_000_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: 60_000_000_000) } catch { return }
             guard let self, self.accountSession == session else { return }
             self.enforceAccess()
             if self.stage == .ready { self.checkAccess() }
@@ -771,7 +774,7 @@ final class TelegramClient: ObservableObject {
     }
 
     func enforceAccess() {
-        if stage == .ready && ((accessDeadline.map { ContinuousClock().now >= $0 } ?? true) || Int64(Date().timeIntervalSince1970) >= accessExpiry) {
+        if stage == .ready && !accessPersistent && ((accessDeadline.map { ContinuousClock().now >= $0 } ?? true) || Int64(Date().timeIntervalSince1970) >= accessExpiry) {
             stage = .activation
             accessMessage = "Your access pass expired. Connecting to Telegram to renew it…"
             if !accessBusy { checkAccess() }
@@ -819,9 +822,13 @@ final class TelegramClient: ObservableObject {
               sender["user_id"] as? Int64 == Int64(config.botUserID), message["chat_id"] as? Int64 == Int64(config.botUserID),
               let content = message["content"] as? [String: Any] else { return }
         if let revision = AccessSnapshot.eventRevision(message), revision > accessRevision {
-            accessRevision = revision; accessNonce = ""; accessBusy = false; accessExpiry = 0; accessDeadline = nil
-            accessTimer?.cancel(); accessRefresh?.cancel(); announcement = nil
-            saveAccess(); stage = .activation
+            let previousAccessIsValid = hasValidAccess
+            accessRevision = revision; accessNonce = ""; accessBusy = false
+            accessTimer?.cancel(); accessRefresh?.cancel()
+            if !previousAccessIsValid {
+                accessExpiry = 0; accessDeadline = nil; accessPersistent = false; announcement = nil
+                saveAccess(); stage = .activation
+            }
             accessMessage = "Membership changed. Verifying…"
             if accessActivated {
                 let session = accountSession
@@ -839,15 +846,21 @@ final class TelegramClient: ObservableObject {
                   let revision = receipt.revision, revision >= accessRevision else { return }
             let nonce = accessNonce
             accessNonce = ""; accessBusy = false; accessTimer?.cancel(); accessRefresh?.cancel()
+            if receipt.status == "unavailable", hasValidAccess {
+                send(["@type": "sendMessage", "chat_id": accessBotChat, "input_message_content": ["@type": "inputMessageText", "text": ["@type": "formattedText", "text": "/verified " + nonce]]])
+                accessConnectionFailed()
+                return
+            }
             accessActivated = true
             accessRevision = revision; accessNeedsPaid = receipt.paid ?? false; accessMissing = Set(receipt.missing ?? [])
             accessDenied = receipt.status == "revoked"
             if receipt.status == "authorized" {
                 accessActivated = true; saveAccess(token: text, nonce: nonce); grantAccess(receipt)
             } else {
-                accessExpiry = 0; accessDeadline = nil; stage = .activation; announcement = nil; saveAccess()
+                accessExpiry = 0; accessDeadline = nil; accessPersistent = false; stage = .activation; announcement = nil; saveAccess()
                 switch receipt.status {
-                case "unpaid": accessMessage = "Request paid-group approval, then Activate. Join any required channels shown below."
+                case "unpaid": accessMessage = "Join the paid group or contact support for access."
+                case "other_device": accessMessage = "This account is active on another device. Activate here to move access to this device."
                 case "join_required": accessMessage = "Join the required channels below. We'll verify again after joining."
                 case "revoked": accessMessage = "Access was revoked by an administrator. Contact us for help."
                 case "not_started": accessMessage = "Tap Activate to start the bot and verify membership."
@@ -947,7 +960,7 @@ final class TelegramClient: ObservableObject {
         noticeHistory = NoticeHistory(); notifications = []; notificationsCursor = 0; notificationsMore = true; notificationsLoading = false; notificationsError = ""
         authorizationSetup.reset()
         if let key = accessCacheKey { try? SecureStore.remove(key) }
-        accessRefresh?.cancel(); accessActivated = false; accessDevice = ""; accessRevision = 0
+        accessRefresh?.cancel(); accessActivated = false; accessPersistent = false; accessDevice = ""; accessRevision = 0
         accessMissing = []; accessNeedsPaid = false; accessDenied = false
         accessTimer?.cancel(); accessNonce = ""; accessBusy = false; accessDeadline = nil; accessExpiry = 0; accessBotChat = 0; announcement = nil
         accountSession = UUID(); library.deactivate(); profileName = ""; profileUsername = ""

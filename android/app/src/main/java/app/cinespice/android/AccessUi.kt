@@ -33,12 +33,10 @@ import kotlinx.coroutines.withContext
             Text("Activate once on this device. Your membership keeps your access active.")
             Text(model.accessMessage)
             Button(onClick = { model.accessAction(true) }, enabled = !model.accessBusy) { Text(if (model.accessBusy) "Verifying…" else "Activate") }
-            for (index in model.accessMissing.sorted().filter { it in 0 until config.channels.length() }) {
+            if (config.channels.length() > 0) Text("Optional: join our channel for updates.")
+            for (index in 0 until config.channels.length()) {
                 val channel = config.channels.getJSONObject(index)
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    OutlinedButton(onClick = { model.joinCommunity(channel.getString("url")) }, enabled = !model.accessBusy) { Text("Join ${channel.getString("title")}") }
-                    TextButton(onClick = { uri.openUri(channel.getString("url")) }) { Text("Open") }
-                }
+                TextButton(onClick = { uri.openUri(channel.getString("url")) }) { Text("Open ${channel.getString("title")}") }
             }
             if (model.accessNeedsPaid || model.accessRevoked) TextButton(onClick = { uri.openUri(config.contactURL) }) { Text(if (model.accessRevoked) "Contact support" else "Request paid-group access") }
         }

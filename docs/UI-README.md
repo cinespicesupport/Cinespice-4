@@ -58,12 +58,12 @@ remote search result gets metadata persisted with its membership. Deselecting a
 source hides its items without deleting membership. Each Telegram account has its
 own database. Custom named lists are a future extension, not implemented here.
 
-Download is available on video menus and in the player's More panel. Play streams
+Download is available in video details, video menus and the player's More panel. Play streams
 when possible and pauses a same-file full download without removing cached bytes.
 Downloads persist preparing/downloading/paused/completed intent per account and
 reconcile it with TDLib after restart. Paused and legacy cancelled entries offer
-Resume; failed work offers Retry. Completed cards expose Save to device using the
-iOS Files picker and original filename. TDLib may evict cached data; playback and
+Resume; failed work offers Retry. Download cards and details show clear action buttons.
+Completed items expose Save to device using the iOS Files picker and original filename. TDLib may evict cached data; playback and
 export refresh message/file state instead of blindly trusting stored paths.
 
 Long library pages expose Search and Top controls. Collection search queries only

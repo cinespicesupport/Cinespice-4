@@ -7,21 +7,21 @@ For the detailed behavior, protocol, storage and limitations, read [bot.md](bot.
 ## What you get
 
 - A native **Activate your access** screen in Android and iOS, after account authentication (and after two-step verification when required).
-- Access only when the same numeric account ID has started the bot, belongs to your **private paid-members group**, and belongs to every configured community channel.
+- Access only when the same numeric account ID has started the bot, belongs to your **private paid-members group**. Updates channels are optional.
 - Manual approval: take payment through your own contact process, then manually add the buyer to the private group. The bot does not collect payment.
 - A welcome message in the paid group when a member joins, with a Start access bot button.
 - Admin-only broadcasts with text, formatting, one photo or one GIF/animation. Members receive the message in the bot chat and a Cinespice announcement banner that expands when tapped.
-- Signed, account-bound, short-lived access passes. No bot token or private signing key goes into your APK/IPA.
+- Signed, account- and installation-bound saved activations. No bot token or private signing key goes into your APK/IPA.
 
 **Existing signed-in users are also gated. An app built without access configuration stays locked with “Access setup is pending.”** Configure the bot before distributing the new build.
 
 ## 1. Create your bot and chats
 
 1. Create a bot with **@BotFather**, save its token privately, and note its username and numeric ID (the digits before `:` in its token).
-2. Create a **private paid-members group**. Keep its invitation under your control. Membership in this group is the entitlement: anyone admitted can use the app after completing the other requirements.
+2. Create a **private paid-members group**. Keep its invitation under your control. Membership in this group is the entitlement: anyone admitted can use the app after activating the app.
 3. Choose a separate public contact group/link where people can ask for access. Joining the contact group does **not** grant access.
-4. Optionally choose community channels that users must join.
-5. Add the bot as an administrator to the paid group and all required channels. It needs membership visibility and permission to send welcome messages in the paid group. It does not need to administer your contact group.
+4. Optionally choose updates channels for users to join.
+5. Add the bot as an administrator to the paid group and any channel it should relay as announcements. It needs membership visibility and permission to send welcome messages in the paid group. It does not need to administer your contact group.
 6. Get your own numeric account ID, the paid-group ID and channel IDs using a trusted Telegram client/tool. Groups/channels use negative IDs, commonly `-100…`. Never substitute usernames/display names for IDs. After setup, `/id` in the bot's private chat shows your user ID; an admin can use `/id` in a group to confirm its chat ID.
 
 A bot cannot privately message someone until that person starts it. Welcomes therefore appear **inside the paid group**. The app's single Activate button sends `/start` from the signed-in account with an explicit tap.
@@ -57,7 +57,7 @@ Edit `.env` on your own machine. It is ignored by Git. Values in the example are
 REQUIRED_CHANNELS='[{"id":-1001234567890,"title":"Community","url":"https://t.me/your_channel"}]'
 ```
 
-Use `[]` if you have no required channels. Public links and private `https://t.me/+…` invites work. Pending join requests must be approved before access can pass. Never put the paid group's invitation in this list.
+Use `[]` if you have no optional updates channels. Public links and private `https://t.me/+…` invites work. These channels do not decide access. Never put the paid group's invitation in this list. To relay one channel's new text, photo, or animation posts as in-app announcements, set `ANNOUNCEMENT_CHANNEL_ID` to that channel's numeric ID from this list and make the bot an administrator there.
 
 For a **first installation**, after editing `.env`, generate the key, export the public app configuration, and start the bot:
 
@@ -69,7 +69,7 @@ python -m cinespice_bot run
 
 `keygen` refuses to overwrite an existing key. `export-config` also refuses to overwrite an existing destination: move/remove your old public export intentionally before exporting again. Keep the private key and SQLite state backed up. Run all commands with `licensing-bot/` as the working directory because the default state paths are relative.
 
-The startup check verifies the token's bot identity, that the paid group is private, and administrator status in each configured membership chat. Only run **one polling instance per bot token**. Stop it with Ctrl+C. To restart, activate the venv and run the same `run` command from `licensing-bot/`; `.env` is read again automatically. A service manager should use the same working directory and intended environment; do not put secrets in command arguments.
+The startup check verifies the token's bot identity, that the paid group is private, and the bot's administrator status in that group. Only run **one polling instance per bot token**. Stop it with Ctrl+C. To restart, activate the venv and run the same `run` command from `licensing-bot/`; `.env` is read again automatically. A service manager should use the same working directory and intended environment; do not put secrets in command arguments.
 
 ## 3. Run on Android with Termux
 
@@ -94,7 +94,7 @@ The export creates root `access-config.local.json`, containing **only**:
 
 - bot username and numeric ID;
 - the P-256 public verification key;
-- public contact URL and required-channel titles/links.
+- public contact URL and optional updates-channel titles/links.
 
 The apps do not need the private paid-group ID, admin IDs, token or signing private key. [../access-config.example.json](../access-config.example.json) demonstrates the shape with a disposable example public key. **Replace the complete example with your real export.** Its key cannot verify your bot's receipts.
 
@@ -144,9 +144,13 @@ This generates `Resources/CinespiceAccess.json`. It is ignored by Git and includ
 1. Stop the bot with Ctrl+C and back up `licensing-bot/state/` securely. Keep your existing `.env`, signing key and database. **Do not run keygen again.**
 2. Update this repository on the branch containing these changes. From `licensing-bot`, run `python -m pip install -r requirements.txt`, then `python -m cinespice_bot run`. The new SQLite tables are created automatically; membership/admin state survives later restarts.
 3. Keep the same public `access-config.local.json` / `CINESPICE_ACCESS_CONFIG_JSON` if the bot, key and channel configuration have not changed. Run the configured IPA/APK workflow on the branch containing these app changes. Update **both** the bot and app; older apps keep their old manual flow.
-4. Install the new build and follow the end-to-end test below. No real hardware ID or MAC address is collected: each installation generates a random identifier in Keychain/Android Keystore storage. This binds receipts to the installation; it does not impose a one-device purchase limit or provide hardware attestation.
+4. Install the new build and follow the end-to-end test below. No real hardware ID or MAC address is collected: each installation generates a random identifier in Keychain/Android Keystore storage. The bot permits one activated installation per account; activating another moves access to it. The identifier does not provide hardware attestation.
 
-The first successful activation replaces the previous memory-only behavior with a securely saved, account/installation-bound pass. Checks renew silently near expiry, rather than requiring Activate every reopen. A new login requires activation. Do not set an unlimited pass lifetime: short signed leases are the fallback when membership events cannot reach a device. Keep the bot online and an administrator in every required chat.
+A successful activation stores a signed, account- and installation-bound grant. It survives app closure and bot outages. Sign-out or reinstall requires activation again. A new installation takes over the account, and the previous one is blocked when it receives or checks the update. The app checks quietly on reopening and periodically while open. Optional channels do not affect access.
+
+On startup, the bot checks the current paid-group membership of accounts that started it and repeats checks approximately every 15 minutes while running. Failed checks are retried. On the first scan after upgrade, the bot queues an automatic update for accounts without a previous snapshot; later scans notify only changes. The app blocks when the bot confirms that the user left the paid group or was manually revoked. During bot or Telegram outages an already verified installation can continue: a missed removal or device transfer cannot be enforced until communication resumes. Keep the bot online and back up its SQLite database and signing key.
+
+Existing expiring receipts keep their old rules until the app silently receives a new persistent grant. Update both the bot and app: old apps still enforce expiry and do not understand the new device-transfer response. Device limits cannot be guaranteed for old or modified app builds.
 
 Raw signed replies are sent silently, then edited only after the app validates and acknowledges them. They can briefly appear in the Telegram chat during that exchange; they cannot be invisible because this design uses Telegram chat as transport. Failed delivery/acknowledgment can leave a receipt visible. Historical messages from older builds are not automatically erased; you can delete those manually. The private signing key is never sent in a receipt.
 
@@ -156,11 +160,12 @@ Raw signed replies are sent silently, then edited only after the app validates a
 2. Install a newly configured build and log in, including the cloud password if the account requires it. No password is sent to the bot.
 3. On **Activate your access**, tap **Activate**. With no paid membership it must say approval is pending.
 4. Manually add that same account to your private paid group. It should receive a welcome in the group.
-5. Tap **Join** for each required channel in Cinespice. These actions use the signed-in account. **Open** is an external link fallback. Wait for approval if the channel requires it.
-6. Joining a channel in the app triggers verification automatically. Membership events also trigger verification after paid approval. If an event was missed while disconnected, tap **Activate**. Only all three conditions together unlock the library.
-7. Test with a second unpaid account: copying the APK and forwarding the first account's receipt must not unlock it.
-8. Close and reopen the app: valid saved activation must restore without another tap. Remove the member from either required chat: an online app must lock when the bot update arrives. If offline or an event is missed, its signed pass expires within the configured TTL (one hour by default). Test `/revoke <user ID>` and `/restore <user ID>` too.
-9. Sign out and sign in again, or use a second device: tap Activate for that login. A receipt from a different account or installation must not unlock it. After verification, inspect the bot chat: the signed receipt becomes **Verified ✅**, and the request/acknowledgment commands are deleted.
+5. Joining the updates channel is optional. Confirm a paid member can activate without joining it.
+6. Close the app, stop the bot, and reopen the app after the former pass expiry. Confirm access remains available without tapping Activate.
+7. Remove the account from the paid group and restart the bot. Once the app receives and verifies the change, access must be blocked; rejoin and confirm it is restored.
+8. Activate the same account on a second installation. Confirm that the first installation is blocked once it verifies the transfer, and that the second works. Test sign-out and uninstall/reinstall too.
+9. Test an unpaid account and `/revoke`/`/restore`. A receipt copied to a different account or installation must not unlock it.
+10. If `ANNOUNCEMENT_CHANNEL_ID` is configured, post a text or photo update there and verify it appears in the in-app notifications of a paid user who started the bot.
 
 ## Commands
 
@@ -207,11 +212,11 @@ Photos fit within the message viewport without cropping or using their original 
 - **Setup pending:** export your real public config, set the Actions variable, and rebuild. A bot running alone cannot configure an already installed app.
 - **No reply:** keep the bot running, check connectivity, and ensure no other process polls the same token. Existing webhooks are removed at startup without discarding queued updates.
 - **Awaiting approval:** add the buyer's actual signed-in numeric account to the private paid group. A username match/contact-group membership is insufficient.
-- **Join required:** check *all* configured channels, including approval of pending requests, and check again.
+- **Updates channel:** joining it is optional and does not determine access.
 - **Unavailable:** restore bot administrator/membership permissions and network connectivity. Provider errors never approve an account.
 - **Invalid/ignored receipt:** verify bot username/ID/public key match the installed app. Correct the device clock. Lost/replaced signing keys require new public config and app builds.
 - **Two-step password not requested:** an existing account session can restore authentication without re-entering the password. The separate access gate still runs; this bot does not change account authentication or store cloud passwords.
-- **Bot stopped:** unexpired passes keep working until their deadline. New activations fail closed. Restore the bot using the same state and signing key.
+- **Bot stopped:** saved persistent activations keep working. New activations cannot complete, and membership or device changes cannot be enforced until communication returns. Restore the bot using the same state and signing key.
 
 ## Development checks
 

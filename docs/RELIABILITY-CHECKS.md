@@ -1,10 +1,10 @@
 # Existing-feature reliability checks
 
-These changes preserve signed membership expiry/revocation, account isolation,
+These changes preserve signed membership and revocation checks, account isolation,
 Telegram notification delivery. The former full-download-before-play rule is
 intentionally replaced: Play pauses a same-file full transfer and streams using
 its retained cache.
-They do not add a background transfer service or an offline access extension.
+They do not add a background transfer service. A later access change stores persistent activations and checks membership when communication is available.
 
 ## Changes in both apps
 
@@ -18,8 +18,8 @@ They do not add a background transfer service or an offline access extension.
   and its derived rows. No measured speedup is claimed yet.
 - Search refresh keeps results for the same query and explains partial searches,
   source scope and connection failures. Different queries clear previous results.
-- Renewal failures retry silently while an already validated signed pass is valid.
-  Expiry still gates access, and membership/revocation events still invalidate it.
+- Access checks retry silently while a stored persistent activation is valid.
+  A confirmed paid-group departure, revocation or device transfer gates access.
 - History loading presents the newest eligible announcement, rather than flashing
   older banners. Dismissed banners stay dismissed. Permanent Telegram deletion
   wins over a history response that was already in flight. History errors have
@@ -59,9 +59,9 @@ They do not add a background transfer service or an offline access extension.
 5. Search a title, refresh the same query, then disconnect while loading an older
    page. Keep existing results visible with Retry. Change the query and selected
    sources; old-query/deselected results must not appear. Check a zero-source search.
-6. Disconnect during access renewal while the pass is valid; it must not request
-   manual activation yet. After expiry, access must gate until fresh verification.
-   Leaving/being removed from a required group or /revoke must still gate access.
+6. Disconnect during access verification and reopen the app; a persistent activation
+   must remain usable. Reconnect, leave the paid group or use /revoke: a confirmed
+   denial must gate access. Optional update channels must not gate access.
 7. Read a long text/photo/GIF/video announcement, dismiss its banner, reopen the
    app and paginate older notices. No older banner should replace it. Repeat with
    a media load failure, Retry, Close while loading, /clear and /clearall offline.

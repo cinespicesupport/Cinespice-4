@@ -28,11 +28,12 @@ final class AccessController {
     private long notificationsCursor;
     private String nonce = "";
     private long botChat, deadline, expires;
+    private boolean persistent;
     private final android.os.Handler timer = new android.os.Handler(android.os.Looper.getMainLooper());
     AccessController(Telegram telegram, Context context) { this.telegram = telegram; secure = new SecureStore(context); config = AccessConfiguration.load(context); preferences = context.getSharedPreferences("announcements", 0); }
     synchronized void reset() {
         if (refresh != null) timer.removeCallbacks(refresh);
-        nonce = device = ""; botChat = revision = 0; deadline = expires = 0; busy = activated = needsPaid = revoked = false;
+        nonce = device = ""; botChat = revision = 0; deadline = expires = 0; busy = activated = needsPaid = revoked = persistent = false;
         missing = java.util.Set.of(); announcement = null; noticeHistory = new NoticeHistory(); notifications = java.util.List.of(); notificationsCursor = 0; notificationsMore = true; notificationsLoading = false; notificationsError = "";
         message = "Activate once to verify your membership on this device.";
     }
@@ -58,22 +59,23 @@ final class AccessController {
             if (!device.equals(snapshot.getString("device"))) return;
             activated = true; revision = Math.max(0, snapshot.getLong("revision"));
             AccessReceipt receipt = AccessReceipt.verify(snapshot.getString("token"), config.publicKey, telegram.library.accountId,
-                snapshot.getString("nonce"), System.currentTimeMillis()/1000, device);
-            if (receipt.status.equals("authorized") && receipt.revision >= revision) { grant(receipt); return; }
+                snapshot.getString("nonce"), System.currentTimeMillis()/1000, device, true);
+            if (receipt.status.equals("authorized") && receipt.revision >= revision) { grant(receipt); telegram.io.execute(() -> verify(false)); return; }
         } catch (Exception ignored) { }
         if (activated) telegram.io.execute(() -> verify(false));
     }
     private void grant(AccessReceipt receipt) {
+        persistent = receipt.persistent;
         expires = receipt.expires; deadline = SystemClock.elapsedRealtime() + (expires-System.currentTimeMillis()/1000)*1000;
         telegram.stage = "ready";
         if (refresh != null) timer.removeCallbacks(refresh);
         long session = telegram.generation;
         refresh = () -> { if (session == telegram.generation) telegram.io.execute(() -> verify(false)); };
-        timer.postDelayed(refresh, Math.max(1000, (expires-System.currentTimeMillis()/1000-30)*1000));
+        timer.postDelayed(refresh, persistent ? 21600000 : Math.max(1000, (expires-System.currentTimeMillis()/1000-30)*1000));
         telegram.io.execute(() -> loadAnnouncements(true));
     }
     private boolean hasValidAccess() {
-        return telegram.stage.equals("ready") && expires > System.currentTimeMillis()/1000 && deadline > SystemClock.elapsedRealtime();
+        return telegram.stage.equals("ready") && (persistent || (expires > System.currentTimeMillis()/1000 && deadline > SystemClock.elapsedRealtime()));
     }
     private void connectionFailed() {
         if (!hasValidAccess()) {
@@ -89,12 +91,12 @@ final class AccessController {
                 enforce();
                 if (telegram.stage.equals("ready")) telegram.io.execute(() -> verify(false));
             } };
-            timer.postDelayed(refresh, 10000);
+            timer.postDelayed(refresh, 60000);
         }
         telegram.changed();
     }
     synchronized void enforce() {
-        if (telegram.stage.equals("ready") && (deadline <= SystemClock.elapsedRealtime() || expires <= System.currentTimeMillis()/1000)) {
+        if (telegram.stage.equals("ready") && !persistent && (deadline <= SystemClock.elapsedRealtime() || expires <= System.currentTimeMillis()/1000)) {
             telegram.stage = "activation"; message = "Your access pass expired. Connecting to Telegram to renew it…"; telegram.changed();
             if (!busy) telegram.io.execute(() -> verify(false));
         }
@@ -136,9 +138,14 @@ final class AccessController {
         if (!Json.type(sender).equals("messageSenderUser") || sender.optLong("user_id") != config.botUserID || value.optLong("chat_id") != config.botUserID) return;
         long event = eventRevision(value);
         if (event > revision) {
-            revision = event; expires = deadline = 0; nonce = ""; busy = false; announcement = null;
+            boolean previousAccessIsValid = hasValidAccess();
+            revision = event; nonce = ""; busy = false;
             if (refresh != null) timer.removeCallbacks(refresh);
-            save("", ""); telegram.stage = "activation"; message = "Membership changed. Verifying…"; telegram.changed();
+            if (!previousAccessIsValid) {
+                expires = deadline = 0; persistent = false; announcement = null;
+                save("", ""); telegram.stage = "activation";
+            }
+            message = "Membership changed. Verifying…"; telegram.changed();
             if (activated) { long session = telegram.generation; timer.postDelayed(() -> { if (session == telegram.generation) telegram.io.execute(() -> verify(false)); }, 2100); }
             return;
         }
@@ -149,13 +156,23 @@ final class AccessController {
                 AccessReceipt receipt = AccessReceipt.verify(text, config.publicKey, telegram.library.accountId, nonce, System.currentTimeMillis()/1000, device);
                 if (receipt.revision < revision) return;
                 String challenge = nonce; long session = telegram.generation; long chat = botChat;
-                nonce = ""; busy = false; activated = true; revision = receipt.revision;
+                nonce = ""; busy = false;
+                if (receipt.status.equals("unavailable") && hasValidAccess()) {
+                    telegram.io.execute(() -> {
+                        try { if (session == telegram.generation) telegram.request(Json.obj("@type", "sendMessage", "chat_id", chat, "input_message_content",
+                            Json.obj("@type", "inputMessageText", "text", Json.obj("@type", "formattedText", "text", "/verified " + challenge)))); }
+                        catch (Exception ignored) { }
+                    });
+                    connectionFailed(); return;
+                }
+                activated = true; revision = receipt.revision;
                 java.util.Set<Integer> required = new java.util.HashSet<>();
                 for (int i=0;i<receipt.missing.length();i++) required.add(receipt.missing.getInt(i));
                 missing = java.util.Set.copyOf(required); needsPaid = receipt.paid; revoked = receipt.status.equals("revoked");
                 message = switch(receipt.status) {
                     case "authorized" -> "Verified. Welcome to Cinespice.";
-                    case "unpaid" -> "Request paid-group access, then activate when approved.";
+                    case "unpaid" -> "Join the paid group or contact support for access.";
+                    case "other_device" -> "This account is active on another device. Activate here to move access to this device.";
                     case "not_started" -> "Tap Activate to continue.";
                     case "join_required" -> "Join the channels below to continue.";
                     case "revoked" -> "Your access was revoked. Contact support.";
@@ -163,7 +180,7 @@ final class AccessController {
                 };
                 if (receipt.status.equals("authorized")) { activated = true; save(text, challenge); grant(receipt); }
                 else {
-                    expires = deadline = 0; telegram.stage = "activation"; announcement = null;
+                    expires = deadline = 0; persistent = false; telegram.stage = "activation"; announcement = null;
                     if (refresh != null) timer.removeCallbacks(refresh);
                     save("", "");
                 }
