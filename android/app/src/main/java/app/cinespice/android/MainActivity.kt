@@ -68,6 +68,10 @@ class MainActivity : ComponentActivity() {
     }
     internal fun cancelOpening() { openJob?.cancel(); opening = null }
     internal fun export(video: Video) {
+        if (model.busy) {
+            model.message("Could not save while another operation is running. Please try again.")
+            return
+        }
         if (exportVideo != null) return
         exportVideo = video
         val generation = model.telegram.generation
@@ -76,6 +80,7 @@ class MainActivity : ComponentActivity() {
                 val current = withContext(Dispatchers.IO) { model.telegram.prepare(video) }
                 model.telegram.check(generation)
                 check(model.telegram.completedPath(current).isNotEmpty()) { "Download this video first, then export it." }
+                check(!model.busy) { "Could not save while another operation is running. Please try again." }
                 exportVideo = current; exportGeneration = generation
                 export.launch(Intent(Intent.ACTION_CREATE_DOCUMENT).setType(current.mime).addCategory(Intent.CATEGORY_OPENABLE).putExtra(Intent.EXTRA_TITLE, File(current.name).name))
             } catch (e: Exception) { exportVideo = null; model.message(e.message ?: "Could not export video") }

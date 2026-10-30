@@ -424,9 +424,9 @@ internal fun videoDetails(video: Video): String = listOfNotNull(VideoSort.year(v
             HorizontalDivider()
             DropdownMenuItem(text = { Text("Play / Resume") }, onClick = { action { activity.open(video) } })
             DropdownMenuItem(text = { Text("Start over") }, onClick = { action { activity.open(video, false) } })
-            DropdownMenuItem(text = { Text(if (model.downloadStates[id] in listOf("Paused", "Cancelled")) "Resume download" else "Download") }, enabled = id !in model.preparing && model.downloadStates[id] != "Downloading", onClick = { action { model.download(video) } })
+            DropdownMenuItem(text = { Text(if (model.downloadStates[id] in listOf("Paused", "Cancelled")) "Resume download" else "Download") }, enabled = !model.busy && id !in model.preparing && model.downloadStates[id] != "Downloading", onClick = { action { model.download(video) } })
             DropdownMenuItem(text = { Text("Pause download") }, enabled = model.downloadStates[id] == "Downloading", onClick = { action { model.pauseDownload(video) } })
-            DropdownMenuItem(text = { Text("Save to device…") }, onClick = { action { activity.export(video) } })
+            DropdownMenuItem(text = { Text("Save to device…") }, enabled = !model.busy, onClick = { action { activity.export(video) } })
             DropdownMenuItem(text = { Text("Mark watched") }, onClick = { action { model.mark(video) } })
             DropdownMenuItem(text = { Text("Remove history") }, onClick = { action { model.removeHistory(video) } })
         }

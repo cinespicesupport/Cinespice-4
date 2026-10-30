@@ -253,6 +253,17 @@ def build_application(settings, store, signer, *, request=None):
         await query.edit_message_text('This announcement was already cleared.' if count is None else
             f'Removing this announcement from app notifications for {count} accounts. Other announcements remain. Telegram chat copies remain readable.')
 
+    async def acknowledge_delivery(campaign, uid):
+        # Once Telegram accepted the copy, retry only the local acknowledgement.
+        while not stop.is_set():
+            try:
+                store.delivered(campaign, uid)
+                return
+            except Exception as exc:
+                logging.getLogger('cinespice').error('Delivery acknowledgement failed (%s); retrying.', type(exc).__name__)
+            try: await asyncio.wait_for(stop.wait(), timeout=1)
+            except asyncio.TimeoutError: pass
+
     async def deliver(app):
         while not stop.is_set():
             clear = store.next_notice_clear()
@@ -309,7 +320,7 @@ def build_application(settings, store, signer, *, request=None):
                 if not store.delivery_pending(campaign, uid): continue
                 markup = InlineKeyboardMarkup([[InlineKeyboardButton('Cinespice update', callback_data='notice:1:' + campaign)]])
                 await app.bot.copy_message(uid, chat, message, reply_markup=markup)
-                store.delivered(campaign, uid)
+                await acknowledge_delivery(campaign, uid)
                 await asyncio.sleep(0.2)  # At most 5 deliveries/s; membership lookups also consume API budget.
             except Forbidden:
                 store.delivered(campaign, uid, 'blocked')

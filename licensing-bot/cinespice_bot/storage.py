@@ -47,7 +47,7 @@ class Store:
             return cursor.rowcount == 1
 
     def recent_bot_contact_events(self, limit=20):
-        return self.db.execute('SELECT user_id,blocked,observed_at FROM bot_contact_events ORDER BY rowid DESC LIMIT ?',
+        return self.db.execute('SELECT user_id,blocked,observed_at FROM bot_contact_events ORDER BY observed_at DESC, rowid DESC LIMIT ?',
                                (limit,)).fetchall()
 
     def started(self, uid: int) -> bool:
@@ -158,7 +158,7 @@ class Store:
 
     def delivered(self, campaign: str, uid: int, state='sent'):
         with self.db:
-            self.db.execute('UPDATE deliveries SET state=? WHERE campaign=? AND user_id=?', (state, campaign, uid))
+            self.db.execute("UPDATE deliveries SET state=? WHERE campaign=? AND user_id=? AND state='pending'", (state, campaign, uid))
 
     def retry(self, campaign: str, uid: int, delay: int):
         with self.db:

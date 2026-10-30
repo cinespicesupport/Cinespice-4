@@ -65,6 +65,19 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.store.close(); self.store = Store(self.path/'bot.db')
         self.assertIsNone(self.store.next_delivery()); self.assertEqual(self.store.stats(),(2,{'pending':1,'sent':1}))
         self.store.retry('campaign',8,0); self.assertEqual(self.store.next_delivery(),('campaign',8,42,99,2))
+    def test_bot_contact_history_uses_observation_time_and_limit(self):
+        self.store.record_bot_contact_event(900, 7, True, 100)
+        self.store.record_bot_contact_event(12, 8, False, 200)
+        self.store.record_bot_contact_event(901, 9, True, 150)
+        self.assertEqual(self.store.recent_bot_contact_events(2), [(8, 0, 200), (9, 1, 150)])
+
+    def test_acknowledgement_does_not_restore_a_cleared_delivery(self):
+        self.store.start(7)
+        self.store.queue('cancelled', 42, 99)
+        self.store.delete_notification('cancelled')
+        self.store.delivered('cancelled', 7)
+        self.assertEqual(self.store.stats()[1], {'cleared': 1})
+
     def callbacks(self):
         app = build_application(self.settings,self.store,self.signer)
         return {command: handler.callback for handler in app.handlers[0] for command in getattr(handler,'commands',[])}, app

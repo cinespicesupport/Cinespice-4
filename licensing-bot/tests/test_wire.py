@@ -1,6 +1,7 @@
 """Exercise actual PTB update parsing, command routing and API serialization without a network."""
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -88,6 +89,36 @@ class WireTests(unittest.IsolatedAsyncioTestCase):
         # Reusing the confirmation cannot enqueue a second campaign.
         await self.app.process_update(Update.de_json(query,self.app.bot))
         self.assertEqual(self.store.stats()[0],2)
+    async def test_delivery_acknowledgement_retries_without_sending_again(self):
+        self.store.start(7)
+        self.api.retry = False
+        campaign = 'a' * 32
+        acknowledge = self.store.delivered
+        pending_on_failure = []
+        attempts = 0
+
+        def fail_twice(campaign_id, uid, state='sent'):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 2:
+                pending_on_failure.append(self.store.delivery_pending(campaign_id, uid))
+                raise sqlite3.OperationalError('synthetic private detail')
+            return acknowledge(campaign_id, uid, state)
+
+        with patch.object(self.store, 'delivered', side_effect=fail_twice):
+            with self.assertLogs('cinespice', level='ERROR') as logs:
+                self.store.queue(campaign, 42, 50)
+                for _ in range(250):
+                    if attempts >= 3 and self.store.stats()[1].get('sent') == 1: break
+                    await asyncio.sleep(.02)
+            self.assertEqual(attempts, 3)
+            self.assertEqual(pending_on_failure, [True, True])
+            self.assertEqual(self.store.stats()[1], {'sent': 1})
+            copies = [args for name, args in self.api.calls if name == 'copyMessage' and int(args['chat_id']) == 7]
+            self.assertEqual(len(copies), 1)
+            self.assertIn('Delivery acknowledgement failed (OperationalError)', ' '.join(logs.output))
+            self.assertNotIn('synthetic private detail', ' '.join(logs.output))
+
     async def test_restart_reconciliation_sends_invalidation_for_missed_leave(self):
         self.store.start(7)
         self.store.observe_paid_membership(7, True)
